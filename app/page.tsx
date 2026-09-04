@@ -73,6 +73,7 @@ type FlowNode = {
   color: string;
   value: number;
   editTargets: NodeEditTarget[];
+  placeholder?: boolean;
 };
 
 type FlowLink = {
@@ -327,7 +328,7 @@ function buildFlow(variables: VariableRow[]) {
   const variableValues = computeVariableValues(variables);
 
   const addNode = (node: FlowNode) => {
-    const key = `${node.column}\u0000${node.label}`;
+    const key = node.placeholder ? `placeholder\u0000${node.id}` : `${node.column}\u0000${node.label}`;
     const canonicalId = canonicalByKey.get(key);
     if (!canonicalId) {
       canonicalByKey.set(key, node.id);
@@ -370,6 +371,16 @@ function buildFlow(variables: VariableRow[]) {
           value: variableValue,
           editTargets: [{ rowId: variable.id, field: 'purpose' }],
         }));
+      } else {
+        chain.push(addNode({
+          id: metaId('placeholder-purpose', variable.id),
+          label: '待填写实验目的',
+          column: 0,
+          color: '#aaa89e',
+          value: variableValue,
+          editTargets: [{ rowId: variable.id, field: 'purpose' }],
+          placeholder: true,
+        }));
       }
 
       const sceneParts = [variable.condition, variable.component].filter((value) => value.trim());
@@ -385,6 +396,16 @@ function buildFlow(variables: VariableRow[]) {
             ...(variable.component.trim() ? [{ rowId: variable.id, field: 'component' as EditableField }] : []),
           ],
         }));
+      } else {
+        chain.push(addNode({
+          id: metaId('placeholder-scene', variable.id),
+          label: '待填写实验场景',
+          column: 1,
+          color: '#aaa89e',
+          value: variableValue,
+          editTargets: [{ rowId: variable.id, field: 'condition' }],
+          placeholder: true,
+        }));
       }
 
       if (variable.instrument.trim()) {
@@ -395,6 +416,16 @@ function buildFlow(variables: VariableRow[]) {
           color: META_COLUMN_COLORS[2],
           value: variableValue,
           editTargets: [{ rowId: variable.id, field: 'instrument' }],
+        }));
+      } else {
+        chain.push(addNode({
+          id: metaId('placeholder-instrument', variable.id),
+          label: '待填写测量仪器',
+          column: 2,
+          color: '#aaa89e',
+          value: variableValue,
+          editTargets: [{ rowId: variable.id, field: 'instrument' }],
+          placeholder: true,
         }));
       }
 
@@ -632,7 +663,7 @@ function SankeyGraph({
         return (
           <g
             key={node.id}
-            className={`sankey-node ${isEditable ? 'is-clickable' : ''}`}
+            className={`sankey-node ${isEditable ? 'is-clickable' : ''} ${node.placeholder ? 'is-placeholder' : ''}`}
             onClick={isEditable ? () => onSelectNode(node.editTargets) : undefined}
             onKeyDown={isEditable ? (event) => {
               if (event.key === 'Enter' || event.key === ' ') {
@@ -642,21 +673,31 @@ function SankeyGraph({
             } : undefined}
             tabIndex={isEditable ? 0 : undefined}
             role={isEditable ? 'button' : undefined}
-            aria-label={isEditable ? `定位并编辑：${node.label}` : undefined}
+            aria-label={isEditable ? `${node.placeholder ? '定位并填写' : '定位并编辑'}：${node.label}` : undefined}
           >
-            <rect x={position.x} y={position.y} width={positioned.nodeWidth} height={position.h} fill={node.color} />
+            <rect
+              x={position.x}
+              y={position.y}
+              width={positioned.nodeWidth}
+              height={position.h}
+              fill={node.color}
+              fillOpacity={node.placeholder ? 0.32 : 1}
+              stroke={node.placeholder ? node.color : undefined}
+              strokeWidth={node.placeholder ? 1 : undefined}
+              strokeDasharray={node.placeholder ? '3 2' : undefined}
+            />
             {lines.map((line, index) => (
               <text
                 key={line}
                 x={position.x + positioned.nodeWidth / 2}
                 y={position.y - (lines.length - index) * 13 + 5}
                 textAnchor="middle"
-                fill={node.color}
+                fill={node.placeholder ? '#85837a' : node.color}
                 fontSize="10.5"
                 fontWeight="650"
               >{line}</text>
             ))}
-            <title>{`${node.label}；高度 ${formatValue(node.value)}${isEditable ? '；点击定位到变量表' : ''}`}</title>
+            <title>{`${node.placeholder ? '占位节点；' : ''}${node.label}；高度 ${formatValue(node.value)}${isEditable ? '；点击定位到变量表' : ''}`}</title>
           </g>
         );
       })}
@@ -1062,7 +1103,7 @@ export default function Home() {
           </div>
 
           <div className="border-b bg-secondary/35 px-5 py-3 text-xs leading-5 text-muted-foreground">
-            <span className="font-semibold text-foreground">输入要领：</span>文本框支持换行；空的场景或仪器会被自动跳过；同层同名节点在图中合并并累加高度。用表头按钮整理表格，用 # 控制图中上下顺序。
+            <span className="font-semibold text-foreground">输入要领：</span>文本框支持换行；空字段会生成独立占位节点以保持逐列流动；同层同名节点在图中合并并累加高度。用表头按钮整理表格，用 # 控制图中上下顺序。
           </div>
 
           <div className="editor-scroll max-h-[56vh] min-h-[420px] overflow-auto">
