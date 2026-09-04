@@ -1,0 +1,808 @@
+'use client';
+
+import {
+  ChangeEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import katex from 'katex';
+import {
+  Braces,
+  Check,
+  ChevronDown,
+  CircleHelp,
+  ClipboardPaste,
+  Download,
+  FileJson,
+  FlaskConical,
+  Link2,
+  Plus,
+  RotateCcw,
+  Trash2,
+  X,
+} from 'lucide-react';
+
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
+import { Textarea } from '@/components/ui/textarea';
+
+type Stage = 'raw' | 'd1' | 'd2' | 'd3';
+type FlowMetric = '数据权重' | '样本量' | '不确定度';
+
+type VariableRow = {
+  id: string;
+  name: string;
+  stage: Stage;
+  purpose: string;
+  condition: string;
+  component: string;
+  instrument: string;
+  parents: string[];
+  weight: number;
+};
+
+type LinkAnnotation = {
+  note: string;
+  formula: string;
+  weight?: number;
+};
+
+type FlowNode = {
+  id: string;
+  label: string;
+  column: number;
+  color: string;
+};
+
+type FlowLink = {
+  id: string;
+  source: string;
+  target: string;
+  baseWeight: number;
+};
+
+type ProjectState = {
+  variables: VariableRow[];
+  annotations: Record<string, LinkAnnotation>;
+  metric: FlowMetric;
+};
+
+const STORAGE_KEY = 'building-physics-flow-v1';
+const STAGE_ORDER: Record<Stage, number> = { raw: 3, d1: 4, d2: 5, d3: 6 };
+const STAGES: Array<{ value: Stage; label: string; short: string; color: string }> = [
+  { value: 'raw', label: '原始数据 0', short: '原始 0', color: '#476b78' },
+  { value: 'd1', label: '衍生数据 1', short: '衍生 1', color: '#8b5f72' },
+  { value: 'd2', label: '衍生数据 2', short: '衍生 2', color: '#696388' },
+  { value: 'd3', label: '衍生数据 3', short: '衍生 3', color: '#a36c42' },
+];
+const COLUMN_LABELS = [
+  '实验目的',
+  '实验场景',
+  '测量仪器',
+  '原始数据',
+  '衍生数据 1',
+  '衍生数据 2',
+  '衍生数据 3',
+];
+const COLUMN_COLORS = ['#586849', '#b77743', '#3f7779', ...STAGES.map((stage) => stage.color)];
+
+const SAMPLE_VARIABLES: VariableRow[] = [
+  {
+    id: 'v-mass',
+    name: '称重质量 m',
+    stage: 'raw',
+    purpose: '测干时状态',
+    condition: '干燥至恒重',
+    component: '恒温烘干箱',
+    instrument: '电子天平（0–6200 g，±0.01 g）',
+    parents: [],
+    weight: 3,
+  },
+  {
+    id: 'v-volume',
+    name: '试件体积 V',
+    stage: 'raw',
+    purpose: '测干时状态',
+    condition: '室温尺寸测量',
+    component: '标准试件',
+    instrument: '游标卡尺',
+    parents: [],
+    weight: 2,
+  },
+  {
+    id: 'v-saturated',
+    name: '真空饱和质量 m_sat',
+    stage: 'raw',
+    purpose: '测含湿量',
+    condition: '真空饱和',
+    component: '真空箱',
+    instrument: '电子天平（0–6200 g，±0.01 g）',
+    parents: [],
+    weight: 3,
+  },
+  {
+    id: 'v-underwater',
+    name: '水下称重质量 m_w',
+    stage: 'raw',
+    purpose: '测含湿量',
+    condition: '水下称重',
+    component: '水下称重装置',
+    instrument: '电子天平（0–6200 g，±0.01 g）',
+    parents: [],
+    weight: 2,
+  },
+  {
+    id: 'v-dry',
+    name: '干质量 m_d',
+    stage: 'd1',
+    purpose: '测干时状态',
+    condition: '连续多次称重',
+    component: '恒温烘干箱',
+    instrument: '',
+    parents: ['v-mass'],
+    weight: 3,
+  },
+  {
+    id: 'v-moisture',
+    name: '真空饱和含湿量',
+    stage: 'd1',
+    purpose: '测含湿量',
+    condition: '真空饱和',
+    component: '真空箱',
+    instrument: '',
+    parents: ['v-saturated', 'v-dry'],
+    weight: 2,
+  },
+  {
+    id: 'v-density',
+    name: '干密度 ρ_d',
+    stage: 'd2',
+    purpose: '测干时状态',
+    condition: '',
+    component: '',
+    instrument: '',
+    parents: ['v-dry', 'v-volume'],
+    weight: 2,
+  },
+  {
+    id: 'v-apparent',
+    name: '表观密度',
+    stage: 'd2',
+    purpose: '测含湿量',
+    condition: '',
+    component: '',
+    instrument: '',
+    parents: ['v-dry', 'v-saturated', 'v-underwater'],
+    weight: 1.5,
+  },
+  {
+    id: 'v-porosity',
+    name: '开放孔隙率',
+    stage: 'd2',
+    purpose: '测含湿量',
+    condition: '',
+    component: '',
+    instrument: '',
+    parents: ['v-dry', 'v-saturated', 'v-underwater'],
+    weight: 1.5,
+  },
+  {
+    id: 'v-one-face',
+    name: '单面浸泡饱和体积含水率',
+    stage: 'd3',
+    purpose: '测含湿量',
+    condition: '单面浸泡',
+    component: '水下称重装置',
+    instrument: '',
+    parents: ['v-porosity'],
+    weight: 1,
+  },
+  {
+    id: 'v-rain',
+    name: '模拟降雨累计饱和体积含水率',
+    stage: 'd3',
+    purpose: '测含湿量',
+    condition: '人工模拟降雨',
+    component: '降雨模拟装置',
+    instrument: '',
+    parents: ['v-moisture', 'v-porosity'],
+    weight: 1,
+  },
+];
+
+const SAMPLE_ANNOTATIONS: Record<string, LinkAnnotation> = {
+  'v-mass=>v-dry': {
+    note: '连续多次测量，当最小值不再变化时判定为恒重。',
+    formula: 'm_d = \\min(m_1,\\ldots,m_n)',
+    weight: 3,
+  },
+  'v-dry=>v-density': {
+    note: '干质量与试件体积的关系映射。',
+    formula: '\\rho_d = \\frac{m_d}{V}',
+    weight: 2,
+  },
+  'v-volume=>v-density': {
+    note: '体积作为干密度计算的归一化量。',
+    formula: '\\rho_d = \\frac{m_d}{V}',
+    weight: 2,
+  },
+  'v-porosity=>v-one-face': {
+    note: '将开放孔隙率映射到单面浸泡工况。',
+    formula: '\\theta_{v,\\mathrm{sat}} = \\frac{V_w}{V}',
+    weight: 1,
+  },
+};
+
+function makeId(prefix: string) {
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function metaId(kind: string, ...parts: string[]) {
+  return `${kind}:${parts.join('¦')}`;
+}
+
+function addOrAggregateLink(map: Map<string, FlowLink>, source: string, target: string, weight: number) {
+  const id = `${source}=>${target}`;
+  const existing = map.get(id);
+  if (existing) existing.baseWeight += weight;
+  else map.set(id, { id, source, target, baseWeight: weight });
+}
+
+function buildFlow(variables: VariableRow[]) {
+  const nodeMap = new Map<string, FlowNode>();
+  const linkMap = new Map<string, FlowLink>();
+
+  const addNode = (node: FlowNode) => {
+    if (!nodeMap.has(node.id)) nodeMap.set(node.id, node);
+  };
+
+  variables.forEach((variable) => {
+    addNode({
+      id: variable.id,
+      label: variable.name || '未命名变量',
+      column: STAGE_ORDER[variable.stage],
+      color: STAGES.find((stage) => stage.value === variable.stage)?.color ?? '#476b78',
+    });
+
+    if (variable.stage === 'raw') {
+      const purpose = variable.purpose.trim() || '未分类目的';
+      const scene = [variable.condition.trim(), variable.component.trim()].filter(Boolean).join(' · ') || '未设置场景';
+      const instrument = variable.instrument.trim() || '未设置仪器';
+      const purposeId = metaId('purpose', purpose);
+      const sceneId = metaId('scene', purpose, scene);
+      const instrumentId = metaId('instrument', purpose, scene, instrument);
+      addNode({ id: purposeId, label: purpose, column: 0, color: COLUMN_COLORS[0] });
+      addNode({ id: sceneId, label: scene, column: 1, color: COLUMN_COLORS[1] });
+      addNode({ id: instrumentId, label: instrument, column: 2, color: COLUMN_COLORS[2] });
+      addOrAggregateLink(linkMap, purposeId, sceneId, variable.weight);
+      addOrAggregateLink(linkMap, sceneId, instrumentId, variable.weight);
+      addOrAggregateLink(linkMap, instrumentId, variable.id, variable.weight);
+    } else {
+      variable.parents.forEach((parentId) => {
+        const parent = variables.find((candidate) => candidate.id === parentId);
+        if (parent && STAGE_ORDER[parent.stage] < STAGE_ORDER[variable.stage]) {
+          addOrAggregateLink(linkMap, parentId, variable.id, variable.weight);
+        }
+      });
+    }
+  });
+
+  return { nodes: [...nodeMap.values()], links: [...linkMap.values()] };
+}
+
+function splitLabel(label: string) {
+  const compact = label.replace(/（/g, '(').replace(/）/g, ')');
+  if (compact.length <= 10) return [compact];
+  if (compact.length <= 20) return [compact.slice(0, 10), compact.slice(10)];
+  return [compact.slice(0, 10), `${compact.slice(10, 19)}…`];
+}
+
+function safeNumber(value: string, fallback = 1) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function SankeyGraph({
+  variables,
+  annotations,
+  selectedLinkId,
+  onSelectLink,
+  svgRef,
+}: {
+  variables: VariableRow[];
+  annotations: Record<string, LinkAnnotation>;
+  selectedLinkId: string | null;
+  onSelectLink: (id: string) => void;
+  svgRef: React.RefObject<SVGSVGElement | null>;
+}) {
+  const flow = useMemo(() => buildFlow(variables), [variables]);
+  const positioned = useMemo(() => {
+    const byColumn = COLUMN_LABELS.map((_, column) => flow.nodes.filter((node) => node.column === column));
+    const maxCount = Math.max(1, ...byColumn.map((nodes) => nodes.length));
+    const height = Math.max(560, maxCount * 76 + 120);
+    const positions = new Map<string, { x: number; y: number; h: number }>();
+    byColumn.forEach((nodes, column) => {
+      const gap = 18;
+      const nodeHeight = 48;
+      const total = nodes.length * nodeHeight + Math.max(0, nodes.length - 1) * gap;
+      const start = Math.max(88, (height - total) / 2 + 28);
+      nodes.forEach((node, index) => positions.set(node.id, { x: 28 + column * 184, y: start + index * (nodeHeight + gap), h: nodeHeight }));
+    });
+    return { positions, height };
+  }, [flow.nodes]);
+
+  if (flow.nodes.length === 0) {
+    return (
+      <div className="grid h-[560px] place-items-center p-8 text-center">
+        <div>
+          <div className="mx-auto grid size-14 place-items-center rounded-2xl bg-secondary text-muted-foreground"><Link2 /></div>
+          <p className="mt-4 font-heading text-lg font-semibold">暂无数据流</p>
+          <p className="mt-1 text-sm text-muted-foreground">添加一个原始变量即可开始。</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <svg
+      ref={svgRef}
+      viewBox={`0 0 1320 ${positioned.height}`}
+      className="sankey-svg w-full min-w-[1040px]"
+      style={{ minHeight: 560, height: positioned.height }}
+      role="img"
+      aria-label="建筑物理实验变量数据流桑基图"
+    >
+      <rect width="1320" height={positioned.height} fill="transparent" />
+      {COLUMN_LABELS.map((label, index) => (
+        <g key={label}>
+          <text x={90 + index * 184} y="36" textAnchor="middle" className="sankey-column-label">{label}</text>
+          <line x1={30 + index * 184} x2={150 + index * 184} y1="51" y2="51" stroke={COLUMN_COLORS[index]} strokeWidth="3" strokeLinecap="round" opacity=".72" />
+        </g>
+      ))}
+
+      {flow.links.map((link) => {
+        const source = positioned.positions.get(link.source);
+        const target = positioned.positions.get(link.target);
+        if (!source || !target) return null;
+        const annotation = annotations[link.id];
+        const weight = annotation?.weight ?? link.baseWeight;
+        const strokeWidth = Math.max(7, Math.min(30, 6 + Math.sqrt(weight) * 7));
+        const x1 = source.x + 124;
+        const y1 = source.y + source.h / 2;
+        const x2 = target.x;
+        const y2 = target.y + target.h / 2;
+        const curve = Math.max(50, (x2 - x1) * 0.52);
+        const path = `M ${x1} ${y1} C ${x1 + curve} ${y1}, ${x2 - curve} ${y2}, ${x2} ${y2}`;
+        const sourceNode = flow.nodes.find((node) => node.id === link.source);
+        const targetNode = flow.nodes.find((node) => node.id === link.target);
+        const color = targetNode?.color ?? sourceNode?.color ?? '#637068';
+        const annotated = Boolean(annotation?.note || annotation?.formula);
+        return (
+          <g key={link.id} className={`sankey-link ${selectedLinkId === link.id ? 'is-selected' : ''}`}>
+            <path d={path} fill="none" stroke="transparent" strokeWidth={Math.max(26, strokeWidth + 12)} onClick={() => onSelectLink(link.id)} tabIndex={0} role="button" aria-label={`编辑关系：${sourceNode?.label} 到 ${targetNode?.label}`} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') onSelectLink(link.id); }} />
+            <path className="sankey-flow" d={path} fill="none" stroke={color} strokeWidth={strokeWidth} strokeOpacity={selectedLinkId === link.id ? 0.68 : 0.27} pointerEvents="none" />
+            {annotated && <circle cx={(x1 + x2) / 2} cy={(y1 + y2) / 2} r="6" fill="#fbfaf4" stroke={color} strokeWidth="3" pointerEvents="none" />}
+            <title>{`${sourceNode?.label} → ${targetNode?.label}；流宽 ${weight}`}</title>
+          </g>
+        );
+      })}
+
+      {flow.nodes.map((node) => {
+        const position = positioned.positions.get(node.id);
+        if (!position) return null;
+        const lines = splitLabel(node.label);
+        return (
+          <g key={node.id} className="sankey-node">
+            <rect x={position.x} y={position.y} width="124" height={position.h} rx="10" fill={node.color} />
+            {lines.map((line, index) => (
+              <text key={line} x={position.x + 62} y={position.y + 21 + index * 15} textAnchor="middle" fill="white" fontSize="11.5" fontWeight="560">{line}</text>
+            ))}
+            <title>{node.label}</title>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+function UpstreamPicker({ row, variables, onChange }: { row: VariableRow; variables: VariableRow[]; onChange: (parents: string[]) => void }) {
+  const candidates = variables.filter((candidate) => candidate.id !== row.id && STAGE_ORDER[candidate.stage] < STAGE_ORDER[row.stage]);
+  const selectedNames = row.parents.map((id) => variables.find((candidate) => candidate.id === id)?.name).filter(Boolean);
+
+  return (
+    <details className="upstream-picker relative">
+      <summary className="flex h-8 min-w-[148px] cursor-pointer list-none items-center justify-between gap-2 rounded-lg border bg-background px-2.5 text-xs hover:bg-secondary">
+        <span className="max-w-[115px] truncate">{selectedNames.length ? `已选 ${selectedNames.length} 项` : '点选上游变量'}</span>
+        <ChevronDown className="size-3.5 text-muted-foreground" />
+      </summary>
+      <div className="absolute right-0 z-40 mt-2 w-72 rounded-xl border bg-popover p-2 shadow-xl">
+        <p className="px-2 pb-2 pt-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">可选的前置数据</p>
+        {candidates.length ? (
+          <div className="max-h-60 space-y-1 overflow-y-auto">
+            {candidates.map((candidate) => {
+              const checked = row.parents.includes(candidate.id);
+              return (
+                <label key={candidate.id} className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 text-sm hover:bg-secondary">
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={(event) => onChange(event.target.checked ? [...row.parents, candidate.id] : row.parents.filter((id) => id !== candidate.id))}
+                    className="size-4 accent-[var(--primary)]"
+                  />
+                  <span className="min-w-0 flex-1 truncate">{candidate.name || '未命名变量'}</span>
+                  <Badge variant="outline" className="h-5 px-1.5 text-[10px]">{STAGES.find((stage) => stage.value === candidate.stage)?.short}</Badge>
+                </label>
+              );
+            })}
+          </div>
+        ) : <p className="px-2 py-4 text-center text-xs text-muted-foreground">请先添加更早层级的变量</p>}
+      </div>
+    </details>
+  );
+}
+
+function FormulaPreview({ formula }: { formula: string }) {
+  const html = useMemo(() => {
+    if (!formula.trim()) return '';
+    return katex.renderToString(formula, { throwOnError: false, displayMode: true, trust: false, strict: 'ignore' });
+  }, [formula]);
+
+  if (!formula.trim()) return <span className="text-xs text-muted-foreground">在上方输入 LaTeX，此处实时预览</span>;
+  return <div className="overflow-x-auto" dangerouslySetInnerHTML={{ __html: html }} />;
+}
+
+export default function Home() {
+  const [variables, setVariables] = useState<VariableRow[]>(SAMPLE_VARIABLES);
+  const [annotations, setAnnotations] = useState<Record<string, LinkAnnotation>>(SAMPLE_ANNOTATIONS);
+  const [metric, setMetric] = useState<FlowMetric>('数据权重');
+  const [selectedLinkId, setSelectedLinkId] = useState<string | null>('v-mass=>v-dry');
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const [pasteText, setPasteText] = useState('');
+  const [pasteMessage, setPasteMessage] = useState('');
+  const [hydrated, setHydrated] = useState(false);
+  const svgRef = useRef<SVGSVGElement>(null);
+
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved) as ProjectState;
+        if (Array.isArray(parsed.variables)) setVariables(parsed.variables);
+        if (parsed.annotations) setAnnotations(parsed.annotations);
+        if (parsed.metric) setMetric(parsed.metric);
+      }
+    } catch {
+      // A malformed local draft should never prevent the editor from opening.
+    }
+    setHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    const state: ProjectState = { variables, annotations, metric };
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  }, [variables, annotations, metric, hydrated]);
+
+  const flow = useMemo(() => buildFlow(variables), [variables]);
+  const selectedLink = flow.links.find((link) => link.id === selectedLinkId) ?? null;
+  const selectedSource = selectedLink ? flow.nodes.find((node) => node.id === selectedLink.source) : null;
+  const selectedTarget = selectedLink ? flow.nodes.find((node) => node.id === selectedLink.target) : null;
+  const selectedAnnotation = selectedLinkId ? annotations[selectedLinkId] ?? { note: '', formula: '' } : { note: '', formula: '' };
+
+  const updateVariable = <K extends keyof VariableRow>(id: string, key: K, value: VariableRow[K]) => {
+    setVariables((current) => current.map((variable) => {
+      if (variable.id !== id) return variable;
+      if (key === 'stage') {
+        const nextStage = value as Stage;
+        return {
+          ...variable,
+          stage: nextStage,
+          parents: nextStage === 'raw' ? [] : variable.parents.filter((parentId) => {
+            const parent = current.find((candidate) => candidate.id === parentId);
+            return parent && STAGE_ORDER[parent.stage] < STAGE_ORDER[nextStage];
+          }),
+        };
+      }
+      return { ...variable, [key]: value };
+    }));
+  };
+
+  const addVariable = () => {
+    const previous = variables.at(-1);
+    const row: VariableRow = {
+      id: makeId('variable'),
+      name: '新变量',
+      stage: 'd1',
+      purpose: previous?.purpose ?? '',
+      condition: '',
+      component: '',
+      instrument: '',
+      parents: [],
+      weight: 1,
+    };
+    setVariables((current) => [...current, row]);
+  };
+
+  const removeVariable = (id: string) => {
+    setVariables((current) => current.filter((variable) => variable.id !== id).map((variable) => ({ ...variable, parents: variable.parents.filter((parent) => parent !== id) })));
+    setAnnotations((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !key.includes(`${id}=>`) && !key.includes(`=>${id}`))));
+    if (selectedLinkId?.includes(id)) setSelectedLinkId(null);
+  };
+
+  const updateAnnotation = (patch: Partial<LinkAnnotation>) => {
+    if (!selectedLinkId) return;
+    setAnnotations((current) => ({
+      ...current,
+      [selectedLinkId]: { note: '', formula: '', ...current[selectedLinkId], ...patch },
+    }));
+  };
+
+  const downloadFile = (name: string, content: string, type: string) => {
+    const url = URL.createObjectURL(new Blob([content], { type }));
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = name;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const exportProject = () => {
+    downloadFile('建筑物理实验变量数据流.json', JSON.stringify({ variables, annotations, metric }, null, 2), 'application/json');
+  };
+
+  const exportSvg = () => {
+    if (!svgRef.current) return;
+    const clone = svgRef.current.cloneNode(true) as SVGSVGElement;
+    clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+    clone.querySelectorAll('.sankey-column-label').forEach((element) => element.setAttribute('style', 'fill:#77786f;font-size:11px;font-weight:650;letter-spacing:.06em'));
+    clone.querySelectorAll('.sankey-flow').forEach((element) => element.setAttribute('stroke-linecap', 'round'));
+    downloadFile('实验变量数据流-桑基图.svg', new XMLSerializer().serializeToString(clone), 'image/svg+xml;charset=utf-8');
+  };
+
+  const importJson = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const parsed = JSON.parse(String(reader.result)) as ProjectState;
+        if (!Array.isArray(parsed.variables)) throw new Error('invalid');
+        setVariables(parsed.variables);
+        setAnnotations(parsed.annotations ?? {});
+        setMetric(parsed.metric ?? '数据权重');
+      } catch {
+        window.alert('无法读取该项目文件，请检查 JSON 格式。');
+      }
+    };
+    reader.readAsText(file);
+    event.target.value = '';
+  };
+
+  const importPastedTable = () => {
+    const lines = pasteText.split(/\r?\n/).map((line) => line.split('\t')).filter((cells) => cells.some((cell) => cell.trim()));
+    const headerIndex = lines.findIndex((cells) => cells.some((cell) => cell.includes('实验目的')) && cells.some((cell) => cell.includes('原始数据')));
+    if (headerIndex < 0) {
+      setPasteMessage('未找到表头。请从包含“实验目的”的标题行开始粘贴。');
+      return;
+    }
+    const header = lines[headerIndex].map((cell) => cell.trim());
+    const find = (text: string) => header.findIndex((cell) => cell.includes(text));
+    const purposeIndex = find('实验目的');
+    const contextIndex = header.findIndex((cell) => cell.includes('实验条件') || cell.includes('装置'));
+    const instrumentIndex = find('测量仪器');
+    const stageIndexes: Array<[Stage, number]> = [['raw', find('原始数据')], ['d1', find('衍生数据1')], ['d2', find('衍生数据2')], ['d3', find('衍生数据3')]];
+    let purpose = '';
+    let component = '';
+    let instrument = '';
+    const imported: VariableRow[] = [];
+    lines.slice(headerIndex + 1).forEach((cells) => {
+      const read = (index: number) => index >= 0 ? (cells[index] ?? '').trim() : '';
+      purpose = read(purposeIndex) || purpose;
+      component = read(contextIndex) || component;
+      instrument = read(instrumentIndex) || instrument;
+      let lastCreated: VariableRow | null = null;
+      stageIndexes.forEach(([stage, index]) => {
+        const name = read(index);
+        if (!name) return;
+        const row: VariableRow = {
+          id: makeId(stage),
+          name,
+          stage,
+          purpose,
+          condition: '',
+          component,
+          instrument: stage === 'raw' ? instrument : '',
+          parents: lastCreated ? [lastCreated.id] : [],
+          weight: 1,
+        };
+        imported.push(row);
+        lastCreated = row;
+      });
+    });
+    if (!imported.length) {
+      setPasteMessage('找到了表头，但没有识别到变量数据。');
+      return;
+    }
+    setVariables(imported);
+    setAnnotations({});
+    setSelectedLinkId(null);
+    setPasteOpen(false);
+    setPasteText('');
+    setPasteMessage('');
+  };
+
+  const resetSample = () => {
+    setVariables(SAMPLE_VARIABLES);
+    setAnnotations(SAMPLE_ANNOTATIONS);
+    setMetric('数据权重');
+    setSelectedLinkId('v-mass=>v-dry');
+  };
+
+  return (
+    <main className="min-h-screen bg-background text-foreground">
+      <header className="sticky top-0 z-50 border-b border-border/80 bg-card/92 backdrop-blur-xl">
+        <div className="mx-auto flex max-w-[1760px] flex-wrap items-center justify-between gap-3 px-4 py-3 lg:px-7">
+          <div className="flex items-center gap-3">
+            <div className="grid size-10 place-items-center rounded-xl bg-primary text-primary-foreground shadow-sm"><FlaskConical className="size-5" /></div>
+            <div>
+              <h1 className="font-heading text-[17px] font-semibold tracking-tight">实验变量数据流</h1>
+              <p className="text-[10px] font-semibold tracking-[0.13em] text-muted-foreground">BUILDING PHYSICS · DATA LINEAGE</p>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <Badge variant="outline" className="h-7 gap-1.5 bg-background/70 text-[11px]"><Check className="size-3 text-primary" />本机自动保存</Badge>
+            <Button variant="outline" size="sm" onClick={() => setPasteOpen(true)}><ClipboardPaste />粘贴表格</Button>
+            <label className="inline-flex h-7 cursor-pointer items-center gap-1 rounded-lg border bg-background px-2.5 text-[0.8rem] font-medium transition-colors hover:bg-muted">
+              <FileJson className="size-3.5" />导入项目
+              <input type="file" accept="application/json,.json" className="sr-only" onChange={importJson} />
+            </label>
+            <Button size="sm" onClick={exportProject}><Download />导出项目</Button>
+          </div>
+        </div>
+      </header>
+
+      <section className="mx-auto grid max-w-[1760px] gap-4 p-4 lg:grid-cols-[minmax(580px,0.92fr)_minmax(680px,1.08fr)] lg:px-7">
+        <section className="min-w-0 overflow-hidden rounded-2xl border bg-card shadow-[0_7px_28px_rgb(62_52_37/6%)]">
+          <div className="flex flex-wrap items-end justify-between gap-3 border-b px-5 py-4">
+            <div>
+              <p className="eyebrow">01 · 数据编辑</p>
+              <div className="mt-1 flex items-center gap-2">
+                <h2 className="font-heading text-xl font-semibold">实验变量表</h2>
+                <Badge variant="secondary">{variables.length} 个变量</Badge>
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <Button variant="ghost" size="sm" onClick={resetSample} title="恢复含湿特性示例"><RotateCcw />示例</Button>
+              <Button size="sm" onClick={addVariable}><Plus />添加变量</Button>
+            </div>
+          </div>
+
+          <div className="border-b bg-secondary/35 px-5 py-3 text-xs leading-5 text-muted-foreground">
+            <span className="font-semibold text-foreground">输入要领：</span>原始数据填写实验场景与仪器；衍生数据只需点选上游变量。关系公式与备注在右侧点击流线后填写。
+          </div>
+
+          <div className="editor-scroll max-h-[calc(100vh-245px)] min-h-[520px] overflow-auto">
+            <table className="w-full min-w-[1370px] border-separate border-spacing-0 text-sm">
+              <thead className="sticky top-0 z-20 bg-card text-left text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground shadow-[0_1px_0_var(--border)]">
+                <tr>
+                  <th className="w-12 px-3 py-3 text-center">#</th>
+                  <th className="w-28 px-2 py-3">数据层级</th>
+                  <th className="w-48 px-2 py-3">变量名称</th>
+                  <th className="w-36 px-2 py-3">实验目的</th>
+                  <th className="w-36 px-2 py-3">实验条件</th>
+                  <th className="w-40 px-2 py-3">组件 / 装置</th>
+                  <th className="w-52 px-2 py-3">测量仪器</th>
+                  <th className="w-44 px-2 py-3">上游关系</th>
+                  <th className="w-24 px-2 py-3">默认流宽</th>
+                  <th className="w-12 px-2 py-3" />
+                </tr>
+              </thead>
+              <tbody>
+                {variables.map((row, index) => {
+                  const raw = row.stage === 'raw';
+                  return (
+                    <tr key={row.id} className="group border-b transition-colors hover:bg-secondary/35">
+                      <td className="border-b px-3 py-3 text-center font-mono text-xs text-muted-foreground">{String(index + 1).padStart(2, '0')}</td>
+                      <td className="border-b px-2 py-3">
+                        <NativeSelect className="w-full" size="sm" value={row.stage} onChange={(event) => updateVariable(row.id, 'stage', event.target.value as Stage)} aria-label={`第 ${index + 1} 行数据层级`}>
+                          {STAGES.map((stage) => <NativeSelectOption key={stage.value} value={stage.value}>{stage.short}</NativeSelectOption>)}
+                        </NativeSelect>
+                      </td>
+                      <td className="border-b px-2 py-3"><Input value={row.name} onChange={(event) => updateVariable(row.id, 'name', event.target.value)} aria-label={`第 ${index + 1} 行变量名称`} /></td>
+                      <td className="border-b px-2 py-3"><Input value={row.purpose} onChange={(event) => updateVariable(row.id, 'purpose', event.target.value)} placeholder="如：测含湿量" aria-label={`第 ${index + 1} 行实验目的`} /></td>
+                      <td className="border-b px-2 py-3"><Input value={row.condition} onChange={(event) => updateVariable(row.id, 'condition', event.target.value)} placeholder="如：真空饱和" aria-label={`第 ${index + 1} 行实验条件`} /></td>
+                      <td className="border-b px-2 py-3"><Input value={row.component} onChange={(event) => updateVariable(row.id, 'component', event.target.value)} placeholder="如：真空箱" aria-label={`第 ${index + 1} 行实验装置`} /></td>
+                      <td className="border-b px-2 py-3"><Input value={row.instrument} onChange={(event) => updateVariable(row.id, 'instrument', event.target.value)} placeholder={raw ? '型号、量程、精度' : '由上游继承'} disabled={!raw} aria-label={`第 ${index + 1} 行测量仪器`} /></td>
+                      <td className="border-b px-2 py-3">{raw ? <div className="flex h-8 items-center gap-2 rounded-lg border border-dashed px-2.5 text-xs text-muted-foreground"><Link2 className="size-3.5" />仪器自动连接</div> : <UpstreamPicker row={row} variables={variables} onChange={(parents) => updateVariable(row.id, 'parents', parents)} />}</td>
+                      <td className="border-b px-2 py-3"><Input type="number" min="0.1" step="0.1" value={row.weight} onChange={(event) => updateVariable(row.id, 'weight', safeNumber(event.target.value))} aria-label={`第 ${index + 1} 行默认流宽`} /></td>
+                      <td className="border-b px-2 py-3"><Button variant="ghost" size="icon-sm" onClick={() => removeVariable(row.id)} aria-label={`删除 ${row.name}`} title="删除变量"><Trash2 /></Button></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            {!variables.length && <div className="grid min-h-[420px] place-items-center text-center"><div><p className="font-heading text-lg font-semibold">变量表为空</p><Button className="mt-3" onClick={addVariable}><Plus />添加第一个变量</Button></div></div>}
+          </div>
+        </section>
+
+        <section className="min-w-0 overflow-hidden rounded-2xl border bg-card shadow-[0_7px_28px_rgb(62_52_37/6%)]">
+          <div className="flex flex-wrap items-end justify-between gap-3 border-b px-5 py-4">
+            <div>
+              <p className="eyebrow">02 · 实时结果</p>
+              <div className="mt-1 flex items-center gap-2"><h2 className="font-heading text-xl font-semibold">数据血缘桑基图</h2><Badge variant="secondary">{flow.links.length} 条流</Badge></div>
+            </div>
+            <div className="flex items-center gap-2">
+              <NativeSelect size="sm" value={metric} onChange={(event) => setMetric(event.target.value as FlowMetric)} aria-label="流宽映射指标">
+                <NativeSelectOption value="数据权重">流宽：数据权重</NativeSelectOption>
+                <NativeSelectOption value="样本量">流宽：样本量</NativeSelectOption>
+                <NativeSelectOption value="不确定度">流宽：不确定度</NativeSelectOption>
+              </NativeSelect>
+              <Button variant="outline" size="sm" onClick={exportSvg}><Download />SVG</Button>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-x-4 gap-y-2 border-b bg-secondary/30 px-5 py-2.5">
+            {COLUMN_LABELS.map((label, index) => <span key={label} className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground"><i className="size-2 rounded-full" style={{ background: COLUMN_COLORS[index] }} />{label}</span>)}
+          </div>
+
+          <div className="graph-scroll relative h-[calc(100vh-233px)] min-h-[560px] overflow-auto bg-[radial-gradient(circle_at_1px_1px,#d8d6cc_1px,transparent_0)] bg-[size:22px_22px]">
+            <SankeyGraph variables={variables} annotations={annotations} selectedLinkId={selectedLinkId} onSelectLink={setSelectedLinkId} svgRef={svgRef} />
+
+            <div className="pointer-events-none sticky bottom-4 ml-4 inline-flex items-center gap-2 rounded-xl border bg-background/92 px-3 py-2 text-[11px] text-muted-foreground shadow-sm backdrop-blur">
+              <CircleHelp className="size-3.5" />点击任意流线，添加备注、LaTeX 公式或单独调整流宽
+            </div>
+
+            {selectedLink && selectedLinkId && (
+              <aside className="relation-panel sticky bottom-4 left-full z-30 mr-4 ml-auto w-[min(360px,calc(100%-32px))] rounded-2xl border bg-card/96 p-4 shadow-[0_20px_60px_rgb(42_38_31/18%)] backdrop-blur-xl">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="eyebrow">RELATION · 关系注释</p>
+                    <p className="mt-1 text-sm font-semibold leading-5">{selectedSource?.label} <span className="text-primary">→</span> {selectedTarget?.label}</p>
+                  </div>
+                  <Button variant="ghost" size="icon-sm" onClick={() => setSelectedLinkId(null)} aria-label="关闭关系编辑器"><X /></Button>
+                </div>
+                <label className="mt-4 block text-xs font-semibold">流备注</label>
+                <Textarea className="mt-1 min-h-20 resize-y" value={selectedAnnotation.note} onChange={(event) => updateAnnotation({ note: event.target.value })} placeholder="例：连续多次测量，极值不变时判定为稳定…" />
+                <div className="mt-3 flex items-center justify-between">
+                  <label className="text-xs font-semibold">LaTeX 公式</label>
+                  <div className="flex gap-1">
+                    {['\\frac{a}{b}', '\\rho', '_{d}'].map((snippet) => <button key={snippet} type="button" className="rounded-md border px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground hover:bg-secondary" onClick={() => updateAnnotation({ formula: `${selectedAnnotation.formula}${snippet}` })}>{snippet}</button>)}
+                  </div>
+                </div>
+                <div className="relative mt-1"><Braces className="absolute left-2.5 top-2 size-3.5 text-muted-foreground" /><Input className="pl-8 font-mono text-xs" value={selectedAnnotation.formula} onChange={(event) => updateAnnotation({ formula: event.target.value })} placeholder="\\rho_d = \\frac{m_d}{V}" /></div>
+                <div className="mt-2 grid min-h-14 place-items-center rounded-xl border bg-secondary/35 px-3 py-2 text-center"><FormulaPreview formula={selectedAnnotation.formula} /></div>
+                <div className="mt-3 grid grid-cols-[1fr_110px] items-end gap-3">
+                  <div><p className="text-xs font-semibold">单独流宽</p><p className="mt-1 text-[10px] leading-4 text-muted-foreground">对应{metric}；留空则沿用表格默认值。</p></div>
+                  <Input type="number" min="0.1" step="0.1" value={selectedAnnotation.weight ?? ''} onChange={(event) => updateAnnotation({ weight: event.target.value ? safeNumber(event.target.value) : undefined })} placeholder={String(selectedLink.baseWeight)} aria-label="单独流宽" />
+                </div>
+              </aside>
+            )}
+          </div>
+        </section>
+      </section>
+
+      {pasteOpen && (
+        <div className="fixed inset-0 z-[80] grid place-items-center bg-[#20251f]/45 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="paste-title">
+          <div className="w-full max-w-3xl rounded-2xl border bg-card p-5 shadow-2xl">
+            <div className="flex items-start justify-between gap-4">
+              <div><p className="eyebrow">IMPORT · 批量录入</p><h2 id="paste-title" className="mt-1 font-heading text-xl font-semibold">从 Excel / WPS 粘贴表格</h2></div>
+              <Button variant="ghost" size="icon" onClick={() => setPasteOpen(false)} aria-label="关闭粘贴表格对话框"><X /></Button>
+            </div>
+            <p className="mt-3 text-sm leading-6 text-muted-foreground">从“实验目的”表头行开始复制。网页会识别原始数据及 1–3 级衍生数据，同一行内会自动连接；其余关系可在导入后点选补充。
+            </p>
+            <Textarea autoFocus className="mt-4 min-h-72 resize-y font-mono text-xs leading-5" value={pasteText} onChange={(event) => { setPasteText(event.target.value); setPasteMessage(''); }} placeholder={'实验目的\t实验条件/装置\t测量仪器\t原始数据0\t01关系\t衍生数据1…'} />
+            {pasteMessage && <p className="mt-2 text-sm text-destructive">{pasteMessage}</p>}
+            <div className="mt-4 flex items-center justify-between gap-3">
+              <p className="text-xs text-muted-foreground">导入会替换当前表格；已有内容可先“导出项目”备份。</p>
+              <div className="flex shrink-0 gap-2"><Button variant="outline" onClick={() => setPasteOpen(false)}>取消</Button><Button onClick={importPastedTable}><ClipboardPaste />解析并导入</Button></div>
+            </div>
+          </div>
+        </div>
+      )}
+    </main>
+  );
+}
