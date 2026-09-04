@@ -17,6 +17,7 @@ import {
   Download,
   FileJson,
   FlaskConical,
+  Layers3,
   Link2,
   Plus,
   RotateCcw,
@@ -28,9 +29,10 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
+import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 
-type Stage = 'raw' | 'd1' | 'd2' | 'd3';
+type Stage = 'raw' | `d${number}`;
 type FlowMetric = '数据权重' | '样本量' | '不确定度';
 
 type VariableRow = {
@@ -48,6 +50,7 @@ type VariableRow = {
 type LinkAnnotation = {
   note: string;
   formula: string;
+  showFormula?: boolean;
   weight?: number;
 };
 
@@ -70,26 +73,54 @@ type ProjectState = {
   variables: VariableRow[];
   annotations: Record<string, LinkAnnotation>;
   metric: FlowMetric;
+  maxDerivedStage?: number;
 };
 
 const STORAGE_KEY = 'building-physics-flow-v1';
-const STAGE_ORDER: Record<Stage, number> = { raw: 3, d1: 4, d2: 5, d3: 6 };
-const STAGES: Array<{ value: Stage; label: string; short: string; color: string }> = [
-  { value: 'raw', label: '原始数据 0', short: '原始 0', color: '#476b78' },
-  { value: 'd1', label: '衍生数据 1', short: '衍生 1', color: '#8b5f72' },
-  { value: 'd2', label: '衍生数据 2', short: '衍生 2', color: '#696388' },
-  { value: 'd3', label: '衍生数据 3', short: '衍生 3', color: '#a36c42' },
-];
-const COLUMN_LABELS = [
-  '实验目的',
-  '实验场景',
-  '测量仪器',
-  '原始数据',
-  '衍生数据 1',
-  '衍生数据 2',
-  '衍生数据 3',
-];
-const COLUMN_COLORS = ['#586849', '#b77743', '#3f7779', ...STAGES.map((stage) => stage.color)];
+const MIN_DERIVED_STAGES = 3;
+const META_COLUMN_LABELS = ['实验目的', '实验场景', '测量仪器'];
+const META_COLUMN_COLORS = ['#586849', '#b77743', '#3f7779'];
+const DATA_STAGE_COLORS = ['#476b78', '#8b5f72', '#696388', '#a36c42', '#4f7865', '#967a3f', '#5f7893', '#855f8d'];
+
+function stageLevel(stage: Stage) {
+  if (stage === 'raw') return 0;
+  const parsed = Number(stage.slice(1));
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 1;
+}
+
+function normalizeStage(stage: unknown): Stage {
+  if (stage === 'raw' || stage === 0 || stage === '0') return 'raw';
+  const match = String(stage ?? '').match(/^d?(\d+)$/i);
+  const level = match ? Number(match[1]) : 1;
+  return `d${Math.max(1, level)}` as Stage;
+}
+
+function stageColumn(stage: Stage) {
+  return 3 + stageLevel(stage);
+}
+
+function stageColor(stage: Stage) {
+  const level = stageLevel(stage);
+  return DATA_STAGE_COLORS[level % DATA_STAGE_COLORS.length];
+}
+
+function getStages(maxDerivedStage: number) {
+  return [
+    { value: 'raw' as Stage, label: '原始数据 0', short: '原始 0', color: DATA_STAGE_COLORS[0] },
+    ...Array.from({ length: maxDerivedStage }, (_, index) => {
+      const level = index + 1;
+      return { value: `d${level}` as Stage, label: `衍生数据 ${level}`, short: `衍生 ${level}`, color: DATA_STAGE_COLORS[level % DATA_STAGE_COLORS.length] };
+    }),
+  ];
+}
+
+function maxStageIn(variables: VariableRow[]) {
+  return Math.max(MIN_DERIVED_STAGES, ...variables.map((variable) => stageLevel(variable.stage)));
+}
+
+function normalizeVariables(variables: VariableRow[]) {
+  return variables.map((variable) => ({ ...variable, stage: normalizeStage(variable.stage) }));
+}
 
 const SAMPLE_VARIABLES: VariableRow[] = [
   {
@@ -255,7 +286,7 @@ function addOrAggregateLink(map: Map<string, FlowLink>, source: string, target: 
 
 function computeVariableValues(variables: VariableRow[]) {
   const values = new Map<string, number>();
-  const ordered = [...variables].sort((a, b) => STAGE_ORDER[a.stage] - STAGE_ORDER[b.stage]);
+  const ordered = [...variables].sort((a, b) => stageLevel(a.stage) - stageLevel(b.stage));
 
   ordered.forEach((variable) => {
     if (variable.stage === 'raw') {
@@ -265,7 +296,7 @@ function computeVariableValues(variables: VariableRow[]) {
 
     const value = variable.parents.reduce((total, parentId) => {
       const parent = variables.find((candidate) => candidate.id === parentId);
-      if (!parent || STAGE_ORDER[parent.stage] >= STAGE_ORDER[variable.stage]) return total;
+      if (!parent || stageLevel(parent.stage) >= stageLevel(variable.stage)) return total;
       return total + (values.get(parentId) ?? 0);
     }, 0);
     values.set(variable.id, value);
@@ -290,8 +321,8 @@ function buildFlow(variables: VariableRow[]) {
     addNode({
       id: variable.id,
       label: variable.name || '未命名变量',
-      column: STAGE_ORDER[variable.stage],
-      color: STAGES.find((stage) => stage.value === variable.stage)?.color ?? '#476b78',
+      column: stageColumn(variable.stage),
+      color: stageColor(variable.stage),
       value: variableValue,
     });
 
@@ -302,16 +333,16 @@ function buildFlow(variables: VariableRow[]) {
       const purposeId = metaId('purpose', purpose);
       const sceneId = metaId('scene', purpose, scene);
       const instrumentId = metaId('instrument', purpose, scene, instrument);
-      addNode({ id: purposeId, label: purpose, column: 0, color: COLUMN_COLORS[0], value: variableValue }, true);
-      addNode({ id: sceneId, label: scene, column: 1, color: COLUMN_COLORS[1], value: variableValue }, true);
-      addNode({ id: instrumentId, label: instrument, column: 2, color: COLUMN_COLORS[2], value: variableValue }, true);
+      addNode({ id: purposeId, label: purpose, column: 0, color: META_COLUMN_COLORS[0], value: variableValue }, true);
+      addNode({ id: sceneId, label: scene, column: 1, color: META_COLUMN_COLORS[1], value: variableValue }, true);
+      addNode({ id: instrumentId, label: instrument, column: 2, color: META_COLUMN_COLORS[2], value: variableValue }, true);
       addOrAggregateLink(linkMap, purposeId, sceneId, variableValue);
       addOrAggregateLink(linkMap, sceneId, instrumentId, variableValue);
       addOrAggregateLink(linkMap, instrumentId, variable.id, variableValue);
     } else {
       variable.parents.forEach((parentId) => {
         const parent = variables.find((candidate) => candidate.id === parentId);
-        if (parent && STAGE_ORDER[parent.stage] < STAGE_ORDER[variable.stage]) {
+        if (parent && stageLevel(parent.stage) < stageLevel(variable.stage)) {
           addOrAggregateLink(linkMap, parentId, variable.id, variableValues.get(parentId) ?? 0);
         }
       });
@@ -340,21 +371,26 @@ function formatValue(value: number) {
 function SankeyGraph({
   variables,
   annotations,
+  maxDerivedStage,
   selectedLinkId,
   onSelectLink,
   svgRef,
 }: {
   variables: VariableRow[];
   annotations: Record<string, LinkAnnotation>;
+  maxDerivedStage: number;
   selectedLinkId: string | null;
   onSelectLink: (id: string) => void;
   svgRef: React.RefObject<SVGSVGElement | null>;
 }) {
   const flow = useMemo(() => buildFlow(variables), [variables]);
+  const stages = useMemo(() => getStages(maxDerivedStage), [maxDerivedStage]);
+  const columnLabels = useMemo(() => [...META_COLUMN_LABELS, ...stages.map((stage) => stage.label)], [stages]);
+  const columnColors = useMemo(() => [...META_COLUMN_COLORS, ...stages.map((stage) => stage.color)], [stages]);
   const positioned = useMemo(() => {
     const scale = 12;
     const nodeWidth = 24;
-    const byColumn = COLUMN_LABELS.map((_, column) => flow.nodes.filter((node) => node.column === column));
+    const byColumn = columnLabels.map((_, column) => flow.nodes.filter((node) => node.column === column));
     const nodeHeight = (node: FlowNode) => node.value > 0 ? node.value * scale : 2;
     const columnTotals = byColumn.map((nodes) => nodes.reduce((total, node) => total + nodeHeight(node), 0) + Math.max(0, nodes.length - 1) * 58);
     const height = Math.max(560, ...columnTotals.map((total) => total + 128));
@@ -399,8 +435,9 @@ function SankeyGraph({
       linkBands.set(link.id, { sy0, sy1: sy0 + bandHeight, ty0, ty1: ty0 + bandHeight });
     });
 
-    return { positions, linkBands, height, nodeWidth };
-  }, [flow.links, flow.nodes]);
+    const width = Math.max(1040, 80 + columnLabels.length * 184);
+    return { positions, linkBands, height, nodeWidth, width };
+  }, [columnLabels, flow.links, flow.nodes]);
 
   if (flow.nodes.length === 0) {
     return (
@@ -417,17 +454,17 @@ function SankeyGraph({
   return (
     <svg
       ref={svgRef}
-      viewBox={`0 0 1320 ${positioned.height}`}
-      className="sankey-svg w-full min-w-[1040px]"
-      style={{ minHeight: 560, height: positioned.height }}
+      viewBox={`0 0 ${positioned.width} ${positioned.height}`}
+      className="sankey-svg w-full"
+      style={{ minWidth: positioned.width, minHeight: 560, height: positioned.height }}
       role="img"
       aria-label="建筑物理实验变量数据流桑基图"
     >
-      <rect width="1320" height={positioned.height} fill="transparent" />
-      {COLUMN_LABELS.map((label, index) => (
+      <rect width={positioned.width} height={positioned.height} fill="transparent" />
+      {columnLabels.map((label, index) => (
         <g key={label}>
           <text x={40 + index * 184} y="36" textAnchor="middle" className="sankey-column-label">{label}</text>
-          <line x1={28 + index * 184} x2={52 + index * 184} y1="51" y2="51" stroke={COLUMN_COLORS[index]} strokeWidth="3" opacity=".72" />
+          <line x1={28 + index * 184} x2={52 + index * 184} y1="51" y2="51" stroke={columnColors[index]} strokeWidth="3" opacity=".72" />
         </g>
       ))}
 
@@ -445,13 +482,24 @@ function SankeyGraph({
         const sourceNode = flow.nodes.find((node) => node.id === link.source);
         const targetNode = flow.nodes.find((node) => node.id === link.target);
         const color = targetNode?.color ?? sourceNode?.color ?? '#637068';
-        const annotated = Boolean(annotation?.note || annotation?.formula);
+        const formula = annotation?.showFormula === false ? '' : annotation?.formula?.trim() ?? '';
+        const formulaHtml = formula ? katex.renderToString(formula, { throwOnError: false, displayMode: false, trust: false, strict: 'ignore' }) : '';
+        const centerY = (band.sy0 + band.sy1 + band.ty0 + band.ty1) / 4;
+        const title = [
+          `${sourceNode?.label} → ${targetNode?.label}`,
+          `高度 ${formatValue(weight)}`,
+          annotation?.note?.trim() ? `备注：${annotation.note.trim()}` : '',
+        ].filter(Boolean).join('；');
         return (
           <g key={link.id} className={`sankey-link ${selectedLinkId === link.id ? 'is-selected' : ''}`}>
             <path d={path} fill="transparent" stroke="transparent" strokeWidth="10" onClick={() => onSelectLink(link.id)} tabIndex={0} role="button" aria-label={`编辑关系：${sourceNode?.label} 到 ${targetNode?.label}`} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') onSelectLink(link.id); }} />
             <path className="sankey-flow" d={path} fill={color} fillOpacity={selectedLinkId === link.id ? 0.58 : 0.24} pointerEvents="none" />
-            {annotated && <circle cx={(x1 + x2) / 2} cy={(band.sy0 + band.sy1 + band.ty0 + band.ty1) / 4} r="6" fill="#fbfaf4" stroke={color} strokeWidth="3" pointerEvents="none" />}
-            <title>{`${sourceNode?.label} → ${targetNode?.label}；高度 ${formatValue(weight)}`}</title>
+            {formulaHtml && (
+              <foreignObject x={(x1 + x2) / 2 - 70} y={centerY - 16} width="140" height="32" pointerEvents="none">
+                <div xmlns="http://www.w3.org/1999/xhtml" className="sankey-formula-label" dangerouslySetInnerHTML={{ __html: formulaHtml }} />
+              </foreignObject>
+            )}
+            <title>{title}</title>
           </g>
         );
       })}
@@ -483,7 +531,7 @@ function SankeyGraph({
 }
 
 function UpstreamPicker({ row, variables, onChange }: { row: VariableRow; variables: VariableRow[]; onChange: (parents: string[]) => void }) {
-  const candidates = variables.filter((candidate) => candidate.id !== row.id && STAGE_ORDER[candidate.stage] < STAGE_ORDER[row.stage]);
+  const candidates = variables.filter((candidate) => candidate.id !== row.id && stageLevel(candidate.stage) < stageLevel(row.stage));
   const selectedNames = row.parents.map((id) => variables.find((candidate) => candidate.id === id)?.name).filter(Boolean);
 
   return (
@@ -507,7 +555,7 @@ function UpstreamPicker({ row, variables, onChange }: { row: VariableRow; variab
                     className="size-4 accent-[var(--primary)]"
                   />
                   <span className="min-w-0 flex-1 truncate">{candidate.name || '未命名变量'}</span>
-                  <Badge variant="outline" className="h-5 px-1.5 text-[10px]">{STAGES.find((stage) => stage.value === candidate.stage)?.short}</Badge>
+                  <Badge variant="outline" className="h-5 px-1.5 text-[10px]">{candidate.stage === 'raw' ? '原始 0' : `衍生 ${stageLevel(candidate.stage)}`}</Badge>
                 </label>
               );
             })}
@@ -532,6 +580,7 @@ export default function Home() {
   const [variables, setVariables] = useState<VariableRow[]>(SAMPLE_VARIABLES);
   const [annotations, setAnnotations] = useState<Record<string, LinkAnnotation>>(SAMPLE_ANNOTATIONS);
   const [metric, setMetric] = useState<FlowMetric>('数据权重');
+  const [maxDerivedStage, setMaxDerivedStage] = useState(MIN_DERIVED_STAGES);
   const [selectedLinkId, setSelectedLinkId] = useState<string | null>('v-mass=>v-dry');
   const [pasteOpen, setPasteOpen] = useState(false);
   const [pasteText, setPasteText] = useState('');
@@ -544,7 +593,11 @@ export default function Home() {
       const saved = window.localStorage.getItem(STORAGE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved) as ProjectState;
-        if (Array.isArray(parsed.variables)) setVariables(parsed.variables);
+        if (Array.isArray(parsed.variables)) {
+          const normalized = normalizeVariables(parsed.variables);
+          setVariables(normalized);
+          setMaxDerivedStage(Math.max(parsed.maxDerivedStage ?? MIN_DERIVED_STAGES, maxStageIn(normalized)));
+        }
         if (parsed.annotations) setAnnotations(parsed.annotations);
         if (parsed.metric) setMetric(parsed.metric);
       }
@@ -556,27 +609,31 @@ export default function Home() {
 
   useEffect(() => {
     if (!hydrated) return;
-    const state: ProjectState = { variables, annotations, metric };
+    const state: ProjectState = { variables, annotations, metric, maxDerivedStage };
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  }, [variables, annotations, metric, hydrated]);
+  }, [variables, annotations, metric, maxDerivedStage, hydrated]);
 
   const flow = useMemo(() => buildFlow(variables), [variables]);
+  const stages = useMemo(() => getStages(maxDerivedStage), [maxDerivedStage]);
+  const columnLabels = useMemo(() => [...META_COLUMN_LABELS, ...stages.map((stage) => stage.label)], [stages]);
+  const columnColors = useMemo(() => [...META_COLUMN_COLORS, ...stages.map((stage) => stage.color)], [stages]);
   const selectedLink = flow.links.find((link) => link.id === selectedLinkId) ?? null;
   const selectedSource = selectedLink ? flow.nodes.find((node) => node.id === selectedLink.source) : null;
   const selectedTarget = selectedLink ? flow.nodes.find((node) => node.id === selectedLink.target) : null;
-  const selectedAnnotation = selectedLinkId ? annotations[selectedLinkId] ?? { note: '', formula: '' } : { note: '', formula: '' };
+  const selectedAnnotation = selectedLinkId ? annotations[selectedLinkId] ?? { note: '', formula: '', showFormula: true } : { note: '', formula: '', showFormula: true };
 
   const updateVariable = <K extends keyof VariableRow>(id: string, key: K, value: VariableRow[K]) => {
+    if (key === 'stage') setMaxDerivedStage((current) => Math.max(current, stageLevel(normalizeStage(value))));
     setVariables((current) => current.map((variable) => {
       if (variable.id !== id) return variable;
       if (key === 'stage') {
-        const nextStage = value as Stage;
+        const nextStage = normalizeStage(value);
         return {
           ...variable,
           stage: nextStage,
           parents: nextStage === 'raw' ? [] : variable.parents.filter((parentId) => {
             const parent = current.find((candidate) => candidate.id === parentId);
-            return parent && STAGE_ORDER[parent.stage] < STAGE_ORDER[nextStage];
+            return parent && stageLevel(parent.stage) < stageLevel(nextStage);
           }),
         };
       }
@@ -600,6 +657,10 @@ export default function Home() {
     setVariables((current) => [...current, row]);
   };
 
+  const addDerivedStage = () => {
+    setMaxDerivedStage((current) => current + 1);
+  };
+
   const removeVariable = (id: string) => {
     setVariables((current) => current.filter((variable) => variable.id !== id).map((variable) => ({ ...variable, parents: variable.parents.filter((parent) => parent !== id) })));
     setAnnotations((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !key.includes(`${id}=>`) && !key.includes(`=>${id}`))));
@@ -610,7 +671,7 @@ export default function Home() {
     if (!selectedLinkId) return;
     setAnnotations((current) => ({
       ...current,
-      [selectedLinkId]: { note: '', formula: '', ...current[selectedLinkId], ...patch },
+      [selectedLinkId]: { note: '', formula: '', showFormula: true, ...current[selectedLinkId], ...patch },
     }));
   };
 
@@ -624,7 +685,7 @@ export default function Home() {
   };
 
   const exportProject = () => {
-    downloadFile('建筑物理实验变量数据流.json', JSON.stringify({ variables, annotations, metric }, null, 2), 'application/json');
+    downloadFile('建筑物理实验变量数据流.json', JSON.stringify({ variables, annotations, metric, maxDerivedStage }, null, 2), 'application/json');
   };
 
   const exportSvg = () => {
@@ -644,7 +705,9 @@ export default function Home() {
       try {
         const parsed = JSON.parse(String(reader.result)) as ProjectState;
         if (!Array.isArray(parsed.variables)) throw new Error('invalid');
-        setVariables(parsed.variables);
+        const normalized = normalizeVariables(parsed.variables);
+        setVariables(normalized);
+        setMaxDerivedStage(Math.max(parsed.maxDerivedStage ?? MIN_DERIVED_STAGES, maxStageIn(normalized)));
         setAnnotations(parsed.annotations ?? {});
         setMetric(parsed.metric ?? '数据权重');
       } catch {
@@ -667,7 +730,12 @@ export default function Home() {
     const purposeIndex = find('实验目的');
     const contextIndex = header.findIndex((cell) => cell.includes('实验条件') || cell.includes('装置'));
     const instrumentIndex = find('测量仪器');
-    const stageIndexes: Array<[Stage, number]> = [['raw', find('原始数据')], ['d1', find('衍生数据1')], ['d2', find('衍生数据2')], ['d3', find('衍生数据3')]];
+    const stageIndexes: Array<[Stage, number]> = [['raw', find('原始数据')]];
+    header.forEach((cell, index) => {
+      const match = cell.match(/衍生数据\s*(\d+)/);
+      if (match) stageIndexes.push([`d${Number(match[1])}` as Stage, index]);
+    });
+    stageIndexes.sort((a, b) => stageLevel(a[0]) - stageLevel(b[0]));
     let purpose = '';
     let component = '';
     let instrument = '';
@@ -701,6 +769,7 @@ export default function Home() {
       return;
     }
     setVariables(imported);
+    setMaxDerivedStage(maxStageIn(imported));
     setAnnotations({});
     setSelectedLinkId(null);
     setPasteOpen(false);
@@ -712,6 +781,7 @@ export default function Home() {
     setVariables(SAMPLE_VARIABLES);
     setAnnotations(SAMPLE_ANNOTATIONS);
     setMetric('数据权重');
+    setMaxDerivedStage(MIN_DERIVED_STAGES);
     setSelectedLinkId('v-mass=>v-dry');
   };
 
@@ -748,8 +818,9 @@ export default function Home() {
                 <Badge variant="secondary">{variables.length} 个变量</Badge>
               </div>
             </div>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <Button variant="ghost" size="sm" onClick={resetSample} title="恢复含湿特性示例"><RotateCcw />示例</Button>
+              <Button variant="outline" size="sm" onClick={addDerivedStage} title={`新增衍生数据 ${maxDerivedStage + 1}`}><Layers3 />增加衍生层级</Button>
               <Button size="sm" onClick={addVariable}><Plus />添加变量</Button>
             </div>
           </div>
@@ -783,7 +854,7 @@ export default function Home() {
                       <td className="border-b px-3 py-3 text-center font-mono text-xs text-muted-foreground">{String(index + 1).padStart(2, '0')}</td>
                       <td className="border-b px-2 py-3">
                         <NativeSelect className="w-full" size="sm" value={row.stage} onChange={(event) => updateVariable(row.id, 'stage', event.target.value as Stage)} aria-label={`第 ${index + 1} 行数据层级`}>
-                          {STAGES.map((stage) => <NativeSelectOption key={stage.value} value={stage.value}>{stage.short}</NativeSelectOption>)}
+                          {stages.map((stage) => <NativeSelectOption key={stage.value} value={stage.value}>{stage.short}</NativeSelectOption>)}
                         </NativeSelect>
                       </td>
                       <td className="border-b px-2 py-3"><Input value={row.name} onChange={(event) => updateVariable(row.id, 'name', event.target.value)} aria-label={`第 ${index + 1} 行变量名称`} /></td>
@@ -829,11 +900,11 @@ export default function Home() {
           </div>
 
           <div className="flex flex-wrap gap-x-4 gap-y-2 border-b bg-secondary/30 px-5 py-2.5">
-            {COLUMN_LABELS.map((label, index) => <span key={label} className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground"><i className="size-2 rounded-full" style={{ background: COLUMN_COLORS[index] }} />{label}</span>)}
+            {columnLabels.map((label, index) => <span key={label} className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground"><i className="size-2 rounded-full" style={{ background: columnColors[index] }} />{label}</span>)}
           </div>
 
           <div className="graph-scroll relative h-[62vh] min-h-[540px] overflow-auto bg-[radial-gradient(circle_at_1px_1px,#d8d6cc_1px,transparent_0)] bg-[size:22px_22px]">
-            <SankeyGraph variables={variables} annotations={annotations} selectedLinkId={selectedLinkId} onSelectLink={setSelectedLinkId} svgRef={svgRef} />
+            <SankeyGraph variables={variables} annotations={annotations} maxDerivedStage={maxDerivedStage} selectedLinkId={selectedLinkId} onSelectLink={setSelectedLinkId} svgRef={svgRef} />
           </div>
           <div className="flex items-center gap-2 border-t bg-secondary/25 px-5 py-2.5 text-[11px] text-muted-foreground">
             <CircleHelp className="size-3.5 shrink-0" />流带宽度继承上游高度，多条流入在目标节点内堆叠求和。点击流带可编辑备注与 LaTeX 公式。
@@ -856,8 +927,14 @@ export default function Home() {
                 <div>
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <label className="text-xs font-semibold">LaTeX 公式</label>
-                    <div className="flex gap-1">
-                      {['\\frac{a}{b}', '\\rho', '_{d}'].map((snippet) => <button key={snippet} type="button" className="rounded-md border px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground hover:bg-secondary" onClick={() => updateAnnotation({ formula: `${selectedAnnotation.formula}${snippet}` })}>{snippet}</button>)}
+                    <div className="flex items-center gap-3">
+                      <label className="flex cursor-pointer items-center gap-2 text-[11px] text-muted-foreground">
+                        <Switch size="sm" checked={selectedAnnotation.showFormula !== false} onCheckedChange={(checked) => updateAnnotation({ showFormula: checked })} aria-label="在图中显示公式" />
+                        图中显示
+                      </label>
+                      <div className="flex gap-1">
+                        {['\\frac{a}{b}', '\\rho', '_{d}'].map((snippet) => <button key={snippet} type="button" className="rounded-md border px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground hover:bg-secondary" onClick={() => updateAnnotation({ formula: `${selectedAnnotation.formula}${snippet}` })}>{snippet}</button>)}
+                      </div>
                     </div>
                   </div>
                   <div className="relative mt-1"><Braces className="absolute left-2.5 top-2 size-3.5 text-muted-foreground" /><Input className="pl-8 font-mono text-xs" value={selectedAnnotation.formula} onChange={(event) => updateAnnotation({ formula: event.target.value })} placeholder="\\rho_d = \\frac{m_d}{V}" /></div>
@@ -880,7 +957,7 @@ export default function Home() {
               <div><p className="eyebrow">IMPORT · 批量录入</p><h2 id="paste-title" className="mt-1 font-heading text-xl font-semibold">从 Excel / WPS 粘贴表格</h2></div>
               <Button variant="ghost" size="icon" onClick={() => setPasteOpen(false)} aria-label="关闭粘贴表格对话框"><X /></Button>
             </div>
-            <p className="mt-3 text-sm leading-6 text-muted-foreground">从“实验目的”表头行开始复制。网页会识别原始数据及 1–3 级衍生数据，同一行内会自动连接；其余关系可在导入后点选补充。
+            <p className="mt-3 text-sm leading-6 text-muted-foreground">从“实验目的”表头行开始复制。网页会自动识别原始数据和任意编号的衍生数据层级，同一行内会自动连接；其余关系可在导入后点选补充。
             </p>
             <Textarea autoFocus className="mt-4 min-h-72 resize-y font-mono text-xs leading-5" value={pasteText} onChange={(event) => { setPasteText(event.target.value); setPasteMessage(''); }} placeholder={'实验目的\t实验条件/装置\t测量仪器\t原始数据0\t01关系\t衍生数据1…'} />
             {pasteMessage && <p className="mt-2 text-sm text-destructive">{pasteMessage}</p>}
