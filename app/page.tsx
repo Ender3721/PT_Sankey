@@ -419,7 +419,7 @@ function UpstreamPicker({ row, variables, onChange }: { row: VariableRow; variab
         <span className="max-w-[115px] truncate">{selectedNames.length ? `已选 ${selectedNames.length} 项` : '点选上游变量'}</span>
         <ChevronDown className="size-3.5 text-muted-foreground" />
       </summary>
-      <div className="absolute right-0 z-40 mt-2 w-72 rounded-xl border bg-popover p-2 shadow-xl">
+      <div className="mt-2 w-72 rounded-xl border bg-popover p-2 shadow-lg">
         <p className="px-2 pb-2 pt-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">可选的前置数据</p>
         {candidates.length ? (
           <div className="max-h-60 space-y-1 overflow-y-auto">
@@ -644,7 +644,7 @@ export default function Home() {
 
   return (
     <main className="min-h-screen bg-background text-foreground">
-      <header className="sticky top-0 z-50 border-b border-border/80 bg-card/92 backdrop-blur-xl">
+      <header className="border-b border-border/80 bg-card/92 backdrop-blur-xl">
         <div className="mx-auto flex max-w-[1760px] flex-wrap items-center justify-between gap-3 px-4 py-3 lg:px-7">
           <div className="flex items-center gap-3">
             <div className="grid size-10 place-items-center rounded-xl bg-primary text-primary-foreground shadow-sm"><FlaskConical className="size-5" /></div>
@@ -654,7 +654,7 @@ export default function Home() {
             </div>
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
-            <Badge variant="outline" className="h-7 gap-1.5 bg-background/70 text-[11px]"><Check className="size-3 text-primary" />本机自动保存</Badge>
+            <Badge variant="outline" className="h-7 gap-1.5 bg-background/70 text-[11px]"><Check className="size-3 text-primary" />本地服务 · 自动保存</Badge>
             <Button variant="outline" size="sm" onClick={() => setPasteOpen(true)}><ClipboardPaste />粘贴表格</Button>
             <label className="inline-flex h-7 cursor-pointer items-center gap-1 rounded-lg border bg-background px-2.5 text-[0.8rem] font-medium transition-colors hover:bg-muted">
               <FileJson className="size-3.5" />导入项目
@@ -685,7 +685,7 @@ export default function Home() {
             <span className="font-semibold text-foreground">输入要领：</span>原始数据填写实验场景与仪器；衍生数据只需点选上游变量。关系公式与备注在右侧点击流线后填写。
           </div>
 
-          <div className="editor-scroll max-h-[calc(100vh-245px)] min-h-[520px] overflow-auto">
+          <div className="editor-scroll max-h-[68vh] min-h-[520px] overflow-auto">
             <table className="w-full min-w-[1370px] border-separate border-spacing-0 text-sm">
               <thead className="sticky top-0 z-20 bg-card text-left text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground shadow-[0_1px_0_var(--border)]">
                 <tr>
@@ -749,45 +749,50 @@ export default function Home() {
             {COLUMN_LABELS.map((label, index) => <span key={label} className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground"><i className="size-2 rounded-full" style={{ background: COLUMN_COLORS[index] }} />{label}</span>)}
           </div>
 
-          <div className="graph-scroll relative h-[calc(100vh-233px)] min-h-[560px] overflow-auto bg-[radial-gradient(circle_at_1px_1px,#d8d6cc_1px,transparent_0)] bg-[size:22px_22px]">
+          <div className="graph-scroll relative h-[62vh] min-h-[540px] overflow-auto bg-[radial-gradient(circle_at_1px_1px,#d8d6cc_1px,transparent_0)] bg-[size:22px_22px]">
             <SankeyGraph variables={variables} annotations={annotations} selectedLinkId={selectedLinkId} onSelectLink={setSelectedLinkId} svgRef={svgRef} />
-
-            <div className="pointer-events-none sticky bottom-4 ml-4 inline-flex items-center gap-2 rounded-xl border bg-background/92 px-3 py-2 text-[11px] text-muted-foreground shadow-sm backdrop-blur">
-              <CircleHelp className="size-3.5" />点击任意流线，添加备注、LaTeX 公式或单独调整流宽
-            </div>
-
-            {selectedLink && selectedLinkId && (
-              <aside className="relation-panel sticky bottom-4 left-full z-30 mr-4 ml-auto w-[min(360px,calc(100%-32px))] rounded-2xl border bg-card/96 p-4 shadow-[0_20px_60px_rgb(42_38_31/18%)] backdrop-blur-xl">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="eyebrow">RELATION · 关系注释</p>
-                    <p className="mt-1 text-sm font-semibold leading-5">{selectedSource?.label} <span className="text-primary">→</span> {selectedTarget?.label}</p>
-                  </div>
-                  <Button variant="ghost" size="icon-sm" onClick={() => setSelectedLinkId(null)} aria-label="关闭关系编辑器"><X /></Button>
-                </div>
-                <label className="mt-4 block text-xs font-semibold">流备注</label>
-                <Textarea className="mt-1 min-h-20 resize-y" value={selectedAnnotation.note} onChange={(event) => updateAnnotation({ note: event.target.value })} placeholder="例：连续多次测量，极值不变时判定为稳定…" />
-                <div className="mt-3 flex items-center justify-between">
-                  <label className="text-xs font-semibold">LaTeX 公式</label>
-                  <div className="flex gap-1">
-                    {['\\frac{a}{b}', '\\rho', '_{d}'].map((snippet) => <button key={snippet} type="button" className="rounded-md border px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground hover:bg-secondary" onClick={() => updateAnnotation({ formula: `${selectedAnnotation.formula}${snippet}` })}>{snippet}</button>)}
-                  </div>
-                </div>
-                <div className="relative mt-1"><Braces className="absolute left-2.5 top-2 size-3.5 text-muted-foreground" /><Input className="pl-8 font-mono text-xs" value={selectedAnnotation.formula} onChange={(event) => updateAnnotation({ formula: event.target.value })} placeholder="\\rho_d = \\frac{m_d}{V}" /></div>
-                <div className="mt-2 grid min-h-14 place-items-center rounded-xl border bg-secondary/35 px-3 py-2 text-center"><FormulaPreview formula={selectedAnnotation.formula} /></div>
-                <div className="mt-3 grid grid-cols-[1fr_110px] items-end gap-3">
-                  <div><p className="text-xs font-semibold">单独流宽</p><p className="mt-1 text-[10px] leading-4 text-muted-foreground">对应{metric}；留空则沿用表格默认值。</p></div>
-                  <Input type="number" min="0.1" step="0.1" value={selectedAnnotation.weight ?? ''} onChange={(event) => updateAnnotation({ weight: event.target.value ? safeNumber(event.target.value) : undefined })} placeholder={String(selectedLink.baseWeight)} aria-label="单独流宽" />
-                </div>
-              </aside>
-            )}
           </div>
+          <div className="flex items-center gap-2 border-t bg-secondary/25 px-5 py-2.5 text-[11px] text-muted-foreground">
+            <CircleHelp className="size-3.5 shrink-0" />点击任意流线，在图下方编辑备注、LaTeX 公式或单独流宽，不再遮挡图面。
+          </div>
+
+          {selectedLink && selectedLinkId && (
+            <aside className="relation-panel border-t bg-card px-5 py-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="eyebrow">RELATION · 关系注释</p>
+                  <p className="mt-1 text-sm font-semibold leading-5">{selectedSource?.label} <span className="text-primary">→</span> {selectedTarget?.label}</p>
+                </div>
+                <Button variant="ghost" size="icon-sm" onClick={() => setSelectedLinkId(null)} aria-label="关闭关系编辑器"><X /></Button>
+              </div>
+              <div className="mt-4 grid gap-4 2xl:grid-cols-2">
+                <div>
+                  <label className="block text-xs font-semibold">流备注</label>
+                  <Textarea className="mt-1 min-h-24 resize-y" value={selectedAnnotation.note} onChange={(event) => updateAnnotation({ note: event.target.value })} placeholder="例：连续多次测量，极值不变时判定为稳定…" />
+                </div>
+                <div>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <label className="text-xs font-semibold">LaTeX 公式</label>
+                    <div className="flex gap-1">
+                      {['\\frac{a}{b}', '\\rho', '_{d}'].map((snippet) => <button key={snippet} type="button" className="rounded-md border px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground hover:bg-secondary" onClick={() => updateAnnotation({ formula: `${selectedAnnotation.formula}${snippet}` })}>{snippet}</button>)}
+                    </div>
+                  </div>
+                  <div className="relative mt-1"><Braces className="absolute left-2.5 top-2 size-3.5 text-muted-foreground" /><Input className="pl-8 font-mono text-xs" value={selectedAnnotation.formula} onChange={(event) => updateAnnotation({ formula: event.target.value })} placeholder="\\rho_d = \\frac{m_d}{V}" /></div>
+                  <div className="mt-2 grid min-h-14 place-items-center rounded-xl border bg-secondary/35 px-3 py-2 text-center"><FormulaPreview formula={selectedAnnotation.formula} /></div>
+                </div>
+              </div>
+              <div className="mt-4 flex flex-wrap items-end justify-between gap-3 rounded-xl border bg-secondary/25 px-3 py-2.5">
+                <div><p className="text-xs font-semibold">单独流宽</p><p className="mt-1 text-[10px] leading-4 text-muted-foreground">对应{metric}；留空则沿用表格默认值。</p></div>
+                <Input className="w-28" type="number" min="0.1" step="0.1" value={selectedAnnotation.weight ?? ''} onChange={(event) => updateAnnotation({ weight: event.target.value ? safeNumber(event.target.value) : undefined })} placeholder={String(selectedLink.baseWeight)} aria-label="单独流宽" />
+              </div>
+            </aside>
+          )}
         </section>
       </section>
 
       {pasteOpen && (
         <div className="fixed inset-0 z-[80] grid place-items-center bg-[#20251f]/45 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="paste-title">
-          <div className="w-full max-w-3xl rounded-2xl border bg-card p-5 shadow-2xl">
+          <div className="max-h-[calc(100vh-32px)] w-full max-w-3xl overflow-y-auto rounded-2xl border bg-card p-5 shadow-2xl">
             <div className="flex items-start justify-between gap-4">
               <div><p className="eyebrow">IMPORT · 批量录入</p><h2 id="paste-title" className="mt-1 font-heading text-xl font-semibold">从 Excel / WPS 粘贴表格</h2></div>
               <Button variant="ghost" size="icon" onClick={() => setPasteOpen(false)} aria-label="关闭粘贴表格对话框"><X /></Button>

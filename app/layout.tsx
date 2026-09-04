@@ -7,9 +7,10 @@ const geistSans = Geist({ variable: '--font-geist-sans', subsets: ['latin'] });
 const geistMono = Geist_Mono({ variable: '--font-geist-mono', subsets: ['latin'] });
 
 export const metadata: Metadata = {
-  metadataBase: new URL('https://building-physics-data-flow.zhongshaobo2002.chatgpt.site'),
+  metadataBase: new URL('http://127.0.0.1:3000'),
   title: '实验变量数据流',
   description: '建筑物理实验数据血缘编辑与桑基图可视化工具',
+  icons: { icon: '/favicon.svg' },
   openGraph: {
     title: '实验变量数据流',
     description: '建筑物理实验数据血缘编辑与桑基图可视化工具',
