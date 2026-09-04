@@ -113,15 +113,14 @@ body {
 }
 
 .sankey-flow {
-  stroke-linecap: round;
-  transition: stroke-opacity 160ms ease, filter 160ms ease;
+  transition: fill-opacity 160ms ease, filter 160ms ease;
 }
 
 .sankey-link:hover .sankey-flow,
 .sankey-link:focus-within .sankey-flow,
 .sankey-link.is-selected .sankey-flow {
   filter: saturate(1.1);
-  stroke-opacity: 0.62;
+  fill-opacity: 0.62;
 }
 
 .sankey-node rect {

@@ -56,6 +56,7 @@ type FlowNode = {
   label: string;
   column: number;
   color: string;
+  value: number;
 };
 
 type FlowLink = {
@@ -252,20 +253,46 @@ function addOrAggregateLink(map: Map<string, FlowLink>, source: string, target: 
   else map.set(id, { id, source, target, baseWeight: weight });
 }
 
+function computeVariableValues(variables: VariableRow[]) {
+  const values = new Map<string, number>();
+  const ordered = [...variables].sort((a, b) => STAGE_ORDER[a.stage] - STAGE_ORDER[b.stage]);
+
+  ordered.forEach((variable) => {
+    if (variable.stage === 'raw') {
+      values.set(variable.id, Math.max(0, variable.weight));
+      return;
+    }
+
+    const value = variable.parents.reduce((total, parentId) => {
+      const parent = variables.find((candidate) => candidate.id === parentId);
+      if (!parent || STAGE_ORDER[parent.stage] >= STAGE_ORDER[variable.stage]) return total;
+      return total + (values.get(parentId) ?? 0);
+    }, 0);
+    values.set(variable.id, value);
+  });
+
+  return values;
+}
+
 function buildFlow(variables: VariableRow[]) {
   const nodeMap = new Map<string, FlowNode>();
   const linkMap = new Map<string, FlowLink>();
+  const variableValues = computeVariableValues(variables);
 
-  const addNode = (node: FlowNode) => {
-    if (!nodeMap.has(node.id)) nodeMap.set(node.id, node);
+  const addNode = (node: FlowNode, aggregate = false) => {
+    const existing = nodeMap.get(node.id);
+    if (!existing) nodeMap.set(node.id, node);
+    else if (aggregate) existing.value += node.value;
   };
 
   variables.forEach((variable) => {
+    const variableValue = variableValues.get(variable.id) ?? 0;
     addNode({
       id: variable.id,
       label: variable.name || '未命名变量',
       column: STAGE_ORDER[variable.stage],
       color: STAGES.find((stage) => stage.value === variable.stage)?.color ?? '#476b78',
+      value: variableValue,
     });
 
     if (variable.stage === 'raw') {
@@ -275,23 +302,23 @@ function buildFlow(variables: VariableRow[]) {
       const purposeId = metaId('purpose', purpose);
       const sceneId = metaId('scene', purpose, scene);
       const instrumentId = metaId('instrument', purpose, scene, instrument);
-      addNode({ id: purposeId, label: purpose, column: 0, color: COLUMN_COLORS[0] });
-      addNode({ id: sceneId, label: scene, column: 1, color: COLUMN_COLORS[1] });
-      addNode({ id: instrumentId, label: instrument, column: 2, color: COLUMN_COLORS[2] });
-      addOrAggregateLink(linkMap, purposeId, sceneId, variable.weight);
-      addOrAggregateLink(linkMap, sceneId, instrumentId, variable.weight);
-      addOrAggregateLink(linkMap, instrumentId, variable.id, variable.weight);
+      addNode({ id: purposeId, label: purpose, column: 0, color: COLUMN_COLORS[0], value: variableValue }, true);
+      addNode({ id: sceneId, label: scene, column: 1, color: COLUMN_COLORS[1], value: variableValue }, true);
+      addNode({ id: instrumentId, label: instrument, column: 2, color: COLUMN_COLORS[2], value: variableValue }, true);
+      addOrAggregateLink(linkMap, purposeId, sceneId, variableValue);
+      addOrAggregateLink(linkMap, sceneId, instrumentId, variableValue);
+      addOrAggregateLink(linkMap, instrumentId, variable.id, variableValue);
     } else {
       variable.parents.forEach((parentId) => {
         const parent = variables.find((candidate) => candidate.id === parentId);
         if (parent && STAGE_ORDER[parent.stage] < STAGE_ORDER[variable.stage]) {
-          addOrAggregateLink(linkMap, parentId, variable.id, variable.weight);
+          addOrAggregateLink(linkMap, parentId, variable.id, variableValues.get(parentId) ?? 0);
         }
       });
     }
   });
 
-  return { nodes: [...nodeMap.values()], links: [...linkMap.values()] };
+  return { nodes: [...nodeMap.values()], links: [...linkMap.values()], variableValues };
 }
 
 function splitLabel(label: string) {
@@ -304,6 +331,10 @@ function splitLabel(label: string) {
 function safeNumber(value: string, fallback = 1) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function formatValue(value: number) {
+  return Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
 }
 
 function SankeyGraph({
@@ -321,19 +352,54 @@ function SankeyGraph({
 }) {
   const flow = useMemo(() => buildFlow(variables), [variables]);
   const positioned = useMemo(() => {
+    const scale = 8;
+    const nodeWidth = 124;
     const byColumn = COLUMN_LABELS.map((_, column) => flow.nodes.filter((node) => node.column === column));
-    const maxCount = Math.max(1, ...byColumn.map((nodes) => nodes.length));
-    const height = Math.max(560, maxCount * 76 + 120);
+    const nodeHeight = (node: FlowNode) => Math.max(36, 16 + node.value * scale);
+    const columnTotals = byColumn.map((nodes) => nodes.reduce((total, node) => total + nodeHeight(node), 0) + Math.max(0, nodes.length - 1) * 28);
+    const height = Math.max(560, ...columnTotals.map((total) => total + 128));
     const positions = new Map<string, { x: number; y: number; h: number }>();
     byColumn.forEach((nodes, column) => {
-      const gap = 18;
-      const nodeHeight = 48;
-      const total = nodes.length * nodeHeight + Math.max(0, nodes.length - 1) * gap;
-      const start = Math.max(88, (height - total) / 2 + 28);
-      nodes.forEach((node, index) => positions.set(node.id, { x: 28 + column * 184, y: start + index * (nodeHeight + gap), h: nodeHeight }));
+      const gap = 28;
+      const total = columnTotals[column];
+      let cursor = Math.max(82, (height - total) / 2 + 24);
+      nodes.forEach((node) => {
+        const h = nodeHeight(node);
+        positions.set(node.id, { x: 28 + column * 184, y: cursor, h });
+        cursor += h + gap;
+      });
     });
-    return { positions, height };
-  }, [flow.nodes]);
+
+    const outgoingTotals = new Map<string, number>();
+    flow.links.forEach((link) => outgoingTotals.set(link.source, (outgoingTotals.get(link.source) ?? 0) + link.baseWeight));
+    const sourceCursors = new Map<string, number>();
+    const targetCursors = new Map<string, number>();
+    const linkBands = new Map<string, { sy0: number; sy1: number; ty0: number; ty1: number }>();
+    const orderedLinks = [...flow.links].sort((a, b) => {
+      const aSource = positions.get(a.source)?.y ?? 0;
+      const bSource = positions.get(b.source)?.y ?? 0;
+      return aSource - bSource;
+    });
+
+    orderedLinks.forEach((link) => {
+      const source = positions.get(link.source);
+      const target = positions.get(link.target);
+      const sourceNode = flow.nodes.find((node) => node.id === link.source);
+      const targetNode = flow.nodes.find((node) => node.id === link.target);
+      if (!source || !target || !sourceNode || !targetNode) return;
+      const bandHeight = Math.max(1.5, link.baseWeight * scale);
+      const sourceContentTop = source.y + (source.h - sourceNode.value * scale) / 2;
+      const targetContentTop = target.y + (target.h - targetNode.value * scale) / 2;
+      const duplicates = (outgoingTotals.get(link.source) ?? 0) > sourceNode.value + 0.001;
+      const sy0 = duplicates ? sourceContentTop : (sourceCursors.get(link.source) ?? sourceContentTop);
+      const ty0 = targetCursors.get(link.target) ?? targetContentTop;
+      if (!duplicates) sourceCursors.set(link.source, sy0 + bandHeight);
+      targetCursors.set(link.target, ty0 + bandHeight);
+      linkBands.set(link.id, { sy0, sy1: sy0 + bandHeight, ty0, ty1: ty0 + bandHeight });
+    });
+
+    return { positions, linkBands, height, nodeWidth };
+  }, [flow.links, flow.nodes]);
 
   if (flow.nodes.length === 0) {
     return (
@@ -367,26 +433,24 @@ function SankeyGraph({
       {flow.links.map((link) => {
         const source = positioned.positions.get(link.source);
         const target = positioned.positions.get(link.target);
-        if (!source || !target) return null;
+        const band = positioned.linkBands.get(link.id);
+        if (!source || !target || !band) return null;
         const annotation = annotations[link.id];
-        const weight = annotation?.weight ?? link.baseWeight;
-        const strokeWidth = Math.max(7, Math.min(30, 6 + Math.sqrt(weight) * 7));
-        const x1 = source.x + 124;
-        const y1 = source.y + source.h / 2;
+        const weight = link.baseWeight;
+        const x1 = source.x + positioned.nodeWidth;
         const x2 = target.x;
-        const y2 = target.y + target.h / 2;
         const curve = Math.max(50, (x2 - x1) * 0.52);
-        const path = `M ${x1} ${y1} C ${x1 + curve} ${y1}, ${x2 - curve} ${y2}, ${x2} ${y2}`;
+        const path = `M ${x1} ${band.sy0} C ${x1 + curve} ${band.sy0}, ${x2 - curve} ${band.ty0}, ${x2} ${band.ty0} L ${x2} ${band.ty1} C ${x2 - curve} ${band.ty1}, ${x1 + curve} ${band.sy1}, ${x1} ${band.sy1} Z`;
         const sourceNode = flow.nodes.find((node) => node.id === link.source);
         const targetNode = flow.nodes.find((node) => node.id === link.target);
         const color = targetNode?.color ?? sourceNode?.color ?? '#637068';
         const annotated = Boolean(annotation?.note || annotation?.formula);
         return (
           <g key={link.id} className={`sankey-link ${selectedLinkId === link.id ? 'is-selected' : ''}`}>
-            <path d={path} fill="none" stroke="transparent" strokeWidth={Math.max(26, strokeWidth + 12)} onClick={() => onSelectLink(link.id)} tabIndex={0} role="button" aria-label={`编辑关系：${sourceNode?.label} 到 ${targetNode?.label}`} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') onSelectLink(link.id); }} />
-            <path className="sankey-flow" d={path} fill="none" stroke={color} strokeWidth={strokeWidth} strokeOpacity={selectedLinkId === link.id ? 0.68 : 0.27} pointerEvents="none" />
-            {annotated && <circle cx={(x1 + x2) / 2} cy={(y1 + y2) / 2} r="6" fill="#fbfaf4" stroke={color} strokeWidth="3" pointerEvents="none" />}
-            <title>{`${sourceNode?.label} → ${targetNode?.label}；流宽 ${weight}`}</title>
+            <path d={path} fill="transparent" stroke="transparent" strokeWidth="10" onClick={() => onSelectLink(link.id)} tabIndex={0} role="button" aria-label={`编辑关系：${sourceNode?.label} 到 ${targetNode?.label}`} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') onSelectLink(link.id); }} />
+            <path className="sankey-flow" d={path} fill={color} fillOpacity={selectedLinkId === link.id ? 0.58 : 0.24} pointerEvents="none" />
+            {annotated && <circle cx={(x1 + x2) / 2} cy={(band.sy0 + band.sy1 + band.ty0 + band.ty1) / 4} r="6" fill="#fbfaf4" stroke={color} strokeWidth="3" pointerEvents="none" />}
+            <title>{`${sourceNode?.label} → ${targetNode?.label}；高度 ${formatValue(weight)}`}</title>
           </g>
         );
       })}
@@ -395,13 +459,14 @@ function SankeyGraph({
         const position = positioned.positions.get(node.id);
         if (!position) return null;
         const lines = splitLabel(node.label);
+        const showSecondLine = lines.length > 1 && position.h >= 58;
         return (
           <g key={node.id} className="sankey-node">
-            <rect x={position.x} y={position.y} width="124" height={position.h} rx="10" fill={node.color} />
-            {lines.map((line, index) => (
-              <text key={line} x={position.x + 62} y={position.y + 21 + index * 15} textAnchor="middle" fill="white" fontSize="11.5" fontWeight="560">{line}</text>
-            ))}
-            <title>{node.label}</title>
+            <rect x={position.x} y={position.y} width={positioned.nodeWidth} height={position.h} rx="9" fill={node.color} />
+            <text x={position.x + positioned.nodeWidth / 2} y={position.y + 16} textAnchor="middle" fill="white" fontSize="10.5" fontWeight="600">{lines[0]}</text>
+            {showSecondLine && <text x={position.x + positioned.nodeWidth / 2} y={position.y + 30} textAnchor="middle" fill="white" fontSize="10.5" fontWeight="600">{lines[1]}</text>}
+            <text x={position.x + positioned.nodeWidth / 2} y={position.y + position.h - 8} textAnchor="middle" fill="white" fillOpacity=".86" fontSize="10" fontWeight="650">Σ {formatValue(node.value)}</text>
+            <title>{`${node.label}；高度 ${formatValue(node.value)}`}</title>
           </g>
         );
       })}
@@ -682,7 +747,7 @@ export default function Home() {
           </div>
 
           <div className="border-b bg-secondary/35 px-5 py-3 text-xs leading-5 text-muted-foreground">
-            <span className="font-semibold text-foreground">输入要领：</span>原始数据填写实验场景与仪器；衍生数据只需点选上游变量。关系公式与备注在右侧点击流线后填写。
+            <span className="font-semibold text-foreground">输入要领：</span>只给原始数据设定高度；衍生数据点选上游变量后，高度会自动求和。节点高度与连接带宽度使用同一尺度。
           </div>
 
           <div className="editor-scroll max-h-[68vh] min-h-[520px] overflow-auto">
@@ -697,13 +762,14 @@ export default function Home() {
                   <th className="w-40 px-2 py-3">组件 / 装置</th>
                   <th className="w-52 px-2 py-3">测量仪器</th>
                   <th className="w-44 px-2 py-3">上游关系</th>
-                  <th className="w-24 px-2 py-3">默认流宽</th>
+                  <th className="w-28 px-2 py-3">高度值</th>
                   <th className="w-12 px-2 py-3" />
                 </tr>
               </thead>
               <tbody>
                 {variables.map((row, index) => {
                   const raw = row.stage === 'raw';
+                  const computedHeight = flow.variableValues.get(row.id) ?? 0;
                   return (
                     <tr key={row.id} className="group border-b transition-colors hover:bg-secondary/35">
                       <td className="border-b px-3 py-3 text-center font-mono text-xs text-muted-foreground">{String(index + 1).padStart(2, '0')}</td>
@@ -718,7 +784,16 @@ export default function Home() {
                       <td className="border-b px-2 py-3"><Input value={row.component} onChange={(event) => updateVariable(row.id, 'component', event.target.value)} placeholder="如：真空箱" aria-label={`第 ${index + 1} 行实验装置`} /></td>
                       <td className="border-b px-2 py-3"><Input value={row.instrument} onChange={(event) => updateVariable(row.id, 'instrument', event.target.value)} placeholder={raw ? '型号、量程、精度' : '由上游继承'} disabled={!raw} aria-label={`第 ${index + 1} 行测量仪器`} /></td>
                       <td className="border-b px-2 py-3">{raw ? <div className="flex h-8 items-center gap-2 rounded-lg border border-dashed px-2.5 text-xs text-muted-foreground"><Link2 className="size-3.5" />仪器自动连接</div> : <UpstreamPicker row={row} variables={variables} onChange={(parents) => updateVariable(row.id, 'parents', parents)} />}</td>
-                      <td className="border-b px-2 py-3"><Input type="number" min="0.1" step="0.1" value={row.weight} onChange={(event) => updateVariable(row.id, 'weight', safeNumber(event.target.value))} aria-label={`第 ${index + 1} 行默认流宽`} /></td>
+                      <td className="border-b px-2 py-3">
+                        {raw ? (
+                          <Input type="number" min="0.1" step="0.1" value={row.weight} onChange={(event) => updateVariable(row.id, 'weight', safeNumber(event.target.value))} aria-label={`第 ${index + 1} 行原始高度`} />
+                        ) : (
+                          <div className="flex h-8 items-center justify-between rounded-lg border bg-secondary/45 px-2.5 text-xs" title="由所有上游变量的高度自动相加">
+                            <span className="font-semibold text-primary">Σ</span>
+                            <span className="font-mono font-semibold">{formatValue(computedHeight)}</span>
+                          </div>
+                        )}
+                      </td>
                       <td className="border-b px-2 py-3"><Button variant="ghost" size="icon-sm" onClick={() => removeVariable(row.id)} aria-label={`删除 ${row.name}`} title="删除变量"><Trash2 /></Button></td>
                     </tr>
                   );
@@ -736,10 +811,10 @@ export default function Home() {
               <div className="mt-1 flex items-center gap-2"><h2 className="font-heading text-xl font-semibold">数据血缘桑基图</h2><Badge variant="secondary">{flow.links.length} 条流</Badge></div>
             </div>
             <div className="flex items-center gap-2">
-              <NativeSelect size="sm" value={metric} onChange={(event) => setMetric(event.target.value as FlowMetric)} aria-label="流宽映射指标">
-                <NativeSelectOption value="数据权重">流宽：数据权重</NativeSelectOption>
-                <NativeSelectOption value="样本量">流宽：样本量</NativeSelectOption>
-                <NativeSelectOption value="不确定度">流宽：不确定度</NativeSelectOption>
+              <NativeSelect size="sm" value={metric} onChange={(event) => setMetric(event.target.value as FlowMetric)} aria-label="高度值的含义">
+                <NativeSelectOption value="数据权重">高度：数据权重</NativeSelectOption>
+                <NativeSelectOption value="样本量">高度：样本量</NativeSelectOption>
+                <NativeSelectOption value="不确定度">高度：不确定度</NativeSelectOption>
               </NativeSelect>
               <Button variant="outline" size="sm" onClick={exportSvg}><Download />SVG</Button>
             </div>
@@ -753,7 +828,7 @@ export default function Home() {
             <SankeyGraph variables={variables} annotations={annotations} selectedLinkId={selectedLinkId} onSelectLink={setSelectedLinkId} svgRef={svgRef} />
           </div>
           <div className="flex items-center gap-2 border-t bg-secondary/25 px-5 py-2.5 text-[11px] text-muted-foreground">
-            <CircleHelp className="size-3.5 shrink-0" />点击任意流线，在图下方编辑备注、LaTeX 公式或单独流宽，不再遮挡图面。
+            <CircleHelp className="size-3.5 shrink-0" />流带宽度继承上游高度，多条流入在目标节点内堆叠求和。点击流带可编辑备注与 LaTeX 公式。
           </div>
 
           {selectedLink && selectedLinkId && (
@@ -781,9 +856,9 @@ export default function Home() {
                   <div className="mt-2 grid min-h-14 place-items-center rounded-xl border bg-secondary/35 px-3 py-2 text-center"><FormulaPreview formula={selectedAnnotation.formula} /></div>
                 </div>
               </div>
-              <div className="mt-4 flex flex-wrap items-end justify-between gap-3 rounded-xl border bg-secondary/25 px-3 py-2.5">
-                <div><p className="text-xs font-semibold">单独流宽</p><p className="mt-1 text-[10px] leading-4 text-muted-foreground">对应{metric}；留空则沿用表格默认值。</p></div>
-                <Input className="w-28" type="number" min="0.1" step="0.1" value={selectedAnnotation.weight ?? ''} onChange={(event) => updateAnnotation({ weight: event.target.value ? safeNumber(event.target.value) : undefined })} placeholder={String(selectedLink.baseWeight)} aria-label="单独流宽" />
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-secondary/25 px-3 py-2.5">
+                <div><p className="text-xs font-semibold">关系高度</p><p className="mt-1 text-[10px] leading-4 text-muted-foreground">由上游节点的{metric}自动继承，不需要单独输入。</p></div>
+                <Badge className="h-7 bg-primary px-3 font-mono text-sm">Σ {formatValue(selectedLink.baseWeight)}</Badge>
               </div>
             </aside>
           )}
