@@ -91,7 +91,7 @@ type ProjectState = {
 };
 
 const STORAGE_KEY = 'building-physics-flow-v1';
-const MIN_DERIVED_STAGES = 3;
+const MIN_DERIVED_STAGES = 1;
 const META_COLUMN_LABELS = ['实验目的', '实验场景', '测量仪器'];
 const META_COLUMN_COLORS = ['#586849', '#b77743', '#3f7779'];
 const DATA_STAGE_COLORS = ['#476b78', '#8b5f72', '#696388', '#a36c42', '#4f7865', '#967a3f', '#5f7893', '#855f8d'];
@@ -746,7 +746,7 @@ export default function Home() {
   const [variables, setVariables] = useState<VariableRow[]>(SAMPLE_VARIABLES);
   const [annotations, setAnnotations] = useState<Record<string, LinkAnnotation>>(SAMPLE_ANNOTATIONS);
   const [metric, setMetric] = useState<FlowMetric>('数据权重');
-  const [maxDerivedStage, setMaxDerivedStage] = useState(MIN_DERIVED_STAGES);
+  const [maxDerivedStage, setMaxDerivedStage] = useState(() => maxStageIn(SAMPLE_VARIABLES));
   const [selectedLinkId, setSelectedLinkId] = useState<string | null>(null);
   const [focusedVariableIds, setFocusedVariableIds] = useState<string[]>([]);
   const [sortKey, setSortKey] = useState<SortKey | null>(null);
@@ -821,6 +821,8 @@ export default function Home() {
   const selectedSource = selectedLink ? flow.nodes.find((node) => node.id === selectedLink.source) : null;
   const selectedTarget = selectedLink ? flow.nodes.find((node) => node.id === selectedLink.target) : null;
   const selectedAnnotation = selectedLinkId ? annotations[selectedLinkId] ?? { note: '', formula: '', showFormula: true } : { note: '', formula: '', showFormula: true };
+  const highestStageHasVariables = variables.some((variable) => stageLevel(variable.stage) === maxDerivedStage);
+  const canRemoveDerivedStage = maxDerivedStage > MIN_DERIVED_STAGES && !highestStageHasVariables;
 
   const updateVariable = <K extends keyof VariableRow>(id: string, key: K, value: VariableRow[K]) => {
     if (key === 'stage') setMaxDerivedStage((current) => Math.max(current, stageLevel(normalizeStage(value))));
@@ -859,6 +861,12 @@ export default function Home() {
 
   const addDerivedStage = () => {
     setMaxDerivedStage((current) => current + 1);
+  };
+
+  const removeDerivedStage = () => {
+    if (!canRemoveDerivedStage) return;
+    setMaxDerivedStage((current) => Math.max(MIN_DERIVED_STAGES, current - 1));
+    setSelectedLinkId(null);
   };
 
   const removeVariable = (id: string) => {
@@ -1049,7 +1057,7 @@ export default function Home() {
     setVariables(SAMPLE_VARIABLES);
     setAnnotations(SAMPLE_ANNOTATIONS);
     setMetric('数据权重');
-    setMaxDerivedStage(MIN_DERIVED_STAGES);
+    setMaxDerivedStage(maxStageIn(SAMPLE_VARIABLES));
     setSelectedLinkId(null);
   };
 
@@ -1089,12 +1097,23 @@ export default function Home() {
             <div className="flex flex-wrap gap-2">
               <Button variant="ghost" size="sm" onClick={resetSample} title="恢复含湿特性示例"><RotateCcw />示例</Button>
               <Button variant="outline" size="sm" onClick={addDerivedStage} title={`新增衍生数据 ${maxDerivedStage + 1}`}><Layers3 />增加衍生层级</Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={removeDerivedStage}
+                disabled={!canRemoveDerivedStage}
+                title={maxDerivedStage <= MIN_DERIVED_STAGES
+                  ? '至少保留一个衍生层级'
+                  : highestStageHasVariables
+                    ? `衍生数据 ${maxDerivedStage} 中仍有变量，请先移动或删除这些变量`
+                    : `删除空的衍生数据 ${maxDerivedStage}`}
+              ><Trash2 />删除末级</Button>
               <Button size="sm" onClick={addVariable}><Plus />添加变量</Button>
             </div>
           </div>
 
           <div className="border-b bg-secondary/35 px-5 py-3 text-xs leading-5 text-muted-foreground">
-            <span className="font-semibold text-foreground">输入要领：</span>文本框支持换行；空字段会使用隐形占位点保持逐列流动；同层同名节点在图中合并并累加高度。用表头按钮整理表格，用 # 控制图中上下顺序。
+            <span className="font-semibold text-foreground">输入要领：</span>文本框支持换行；空字段会使用隐形占位点保持逐列流动；同层同名节点在图中合并并累加高度。用表头按钮整理表格，用 # 控制图中上下顺序；衍生层级从末级删除，末级含变量时需先移出。
           </div>
 
           <div className="editor-scroll max-h-[56vh] min-h-[420px] overflow-auto">
