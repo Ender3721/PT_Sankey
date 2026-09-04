@@ -352,15 +352,15 @@ function SankeyGraph({
 }) {
   const flow = useMemo(() => buildFlow(variables), [variables]);
   const positioned = useMemo(() => {
-    const scale = 8;
-    const nodeWidth = 124;
+    const scale = 12;
+    const nodeWidth = 24;
     const byColumn = COLUMN_LABELS.map((_, column) => flow.nodes.filter((node) => node.column === column));
-    const nodeHeight = (node: FlowNode) => Math.max(36, 16 + node.value * scale);
-    const columnTotals = byColumn.map((nodes) => nodes.reduce((total, node) => total + nodeHeight(node), 0) + Math.max(0, nodes.length - 1) * 28);
+    const nodeHeight = (node: FlowNode) => node.value > 0 ? node.value * scale : 2;
+    const columnTotals = byColumn.map((nodes) => nodes.reduce((total, node) => total + nodeHeight(node), 0) + Math.max(0, nodes.length - 1) * 58);
     const height = Math.max(560, ...columnTotals.map((total) => total + 128));
     const positions = new Map<string, { x: number; y: number; h: number }>();
     byColumn.forEach((nodes, column) => {
-      const gap = 28;
+      const gap = 58;
       const total = columnTotals[column];
       let cursor = Math.max(82, (height - total) / 2 + 24);
       nodes.forEach((node) => {
@@ -387,9 +387,10 @@ function SankeyGraph({
       const sourceNode = flow.nodes.find((node) => node.id === link.source);
       const targetNode = flow.nodes.find((node) => node.id === link.target);
       if (!source || !target || !sourceNode || !targetNode) return;
-      const bandHeight = Math.max(1.5, link.baseWeight * scale);
-      const sourceContentTop = source.y + (source.h - sourceNode.value * scale) / 2;
-      const targetContentTop = target.y + (target.h - targetNode.value * scale) / 2;
+      const bandHeight = link.baseWeight * scale;
+      if (bandHeight <= 0) return;
+      const sourceContentTop = source.y;
+      const targetContentTop = target.y;
       const duplicates = (outgoingTotals.get(link.source) ?? 0) > sourceNode.value + 0.001;
       const sy0 = duplicates ? sourceContentTop : (sourceCursors.get(link.source) ?? sourceContentTop);
       const ty0 = targetCursors.get(link.target) ?? targetContentTop;
@@ -425,8 +426,8 @@ function SankeyGraph({
       <rect width="1320" height={positioned.height} fill="transparent" />
       {COLUMN_LABELS.map((label, index) => (
         <g key={label}>
-          <text x={90 + index * 184} y="36" textAnchor="middle" className="sankey-column-label">{label}</text>
-          <line x1={30 + index * 184} x2={150 + index * 184} y1="51" y2="51" stroke={COLUMN_COLORS[index]} strokeWidth="3" strokeLinecap="round" opacity=".72" />
+          <text x={40 + index * 184} y="36" textAnchor="middle" className="sankey-column-label">{label}</text>
+          <line x1={28 + index * 184} x2={52 + index * 184} y1="51" y2="51" stroke={COLUMN_COLORS[index]} strokeWidth="3" opacity=".72" />
         </g>
       ))}
 
@@ -459,13 +460,20 @@ function SankeyGraph({
         const position = positioned.positions.get(node.id);
         if (!position) return null;
         const lines = splitLabel(node.label);
-        const showSecondLine = lines.length > 1 && position.h >= 58;
         return (
           <g key={node.id} className="sankey-node">
-            <rect x={position.x} y={position.y} width={positioned.nodeWidth} height={position.h} rx="9" fill={node.color} />
-            <text x={position.x + positioned.nodeWidth / 2} y={position.y + 16} textAnchor="middle" fill="white" fontSize="10.5" fontWeight="600">{lines[0]}</text>
-            {showSecondLine && <text x={position.x + positioned.nodeWidth / 2} y={position.y + 30} textAnchor="middle" fill="white" fontSize="10.5" fontWeight="600">{lines[1]}</text>}
-            <text x={position.x + positioned.nodeWidth / 2} y={position.y + position.h - 8} textAnchor="middle" fill="white" fillOpacity=".86" fontSize="10" fontWeight="650">Σ {formatValue(node.value)}</text>
+            <rect x={position.x} y={position.y} width={positioned.nodeWidth} height={position.h} fill={node.color} />
+            {lines.map((line, index) => (
+              <text
+                key={line}
+                x={position.x + positioned.nodeWidth / 2}
+                y={position.y - (lines.length - index) * 13 + 5}
+                textAnchor="middle"
+                fill={node.color}
+                fontSize="10.5"
+                fontWeight="650"
+              >{line}</text>
+            ))}
             <title>{`${node.label}；高度 ${formatValue(node.value)}`}</title>
           </g>
         );
@@ -789,7 +797,7 @@ export default function Home() {
                           <Input type="number" min="0.1" step="0.1" value={row.weight} onChange={(event) => updateVariable(row.id, 'weight', safeNumber(event.target.value))} aria-label={`第 ${index + 1} 行原始高度`} />
                         ) : (
                           <div className="flex h-8 items-center justify-between rounded-lg border bg-secondary/45 px-2.5 text-xs" title="由所有上游变量的高度自动相加">
-                            <span className="font-semibold text-primary">Σ</span>
+                            <span className="text-[10px] font-semibold text-muted-foreground">自动</span>
                             <span className="font-mono font-semibold">{formatValue(computedHeight)}</span>
                           </div>
                         )}
@@ -858,7 +866,7 @@ export default function Home() {
               </div>
               <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-secondary/25 px-3 py-2.5">
                 <div><p className="text-xs font-semibold">关系高度</p><p className="mt-1 text-[10px] leading-4 text-muted-foreground">由上游节点的{metric}自动继承，不需要单独输入。</p></div>
-                <Badge className="h-7 bg-primary px-3 font-mono text-sm">Σ {formatValue(selectedLink.baseWeight)}</Badge>
+                <Badge className="h-7 bg-primary px-3 text-xs">自动继承</Badge>
               </div>
             </aside>
           )}
