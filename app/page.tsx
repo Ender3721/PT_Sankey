@@ -9,6 +9,9 @@ import {
 } from 'react';
 import katex from 'katex';
 import {
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
   Braces,
   Check,
   ChevronDown,
@@ -17,6 +20,7 @@ import {
   Download,
   FileJson,
   FlaskConical,
+  GripVertical,
   Layers3,
   Link2,
   Plus,
@@ -34,6 +38,14 @@ import { Textarea } from '@/components/ui/textarea';
 
 type Stage = 'raw' | `d${number}`;
 type FlowMetric = '数据权重' | '样本量' | '不确定度';
+type EditableField = 'name' | 'purpose' | 'condition' | 'component' | 'instrument';
+type SortKey = 'stage' | EditableField | 'parents' | 'height';
+type SortDirection = 'asc' | 'desc';
+
+type NodeEditTarget = {
+  rowId: string;
+  field: EditableField;
+};
 
 type VariableRow = {
   id: string;
@@ -60,6 +72,7 @@ type FlowNode = {
   column: number;
   color: string;
   value: number;
+  editTargets: NodeEditTarget[];
 };
 
 type FlowLink = {
@@ -308,55 +321,120 @@ function computeVariableValues(variables: VariableRow[]) {
 function buildFlow(variables: VariableRow[]) {
   const nodeMap = new Map<string, FlowNode>();
   const linkMap = new Map<string, FlowLink>();
+  const canonicalByKey = new Map<string, string>();
+  const variableNodeIds = new Map<string, string>();
+  const rawChains = new Map<string, string[]>();
   const variableValues = computeVariableValues(variables);
 
-  const addNode = (node: FlowNode, aggregate = false) => {
-    const existing = nodeMap.get(node.id);
-    if (!existing) nodeMap.set(node.id, node);
-    else if (aggregate) existing.value += node.value;
+  const addNode = (node: FlowNode) => {
+    const key = `${node.column}\u0000${node.label}`;
+    const canonicalId = canonicalByKey.get(key);
+    if (!canonicalId) {
+      canonicalByKey.set(key, node.id);
+      nodeMap.set(node.id, node);
+      return node.id;
+    }
+
+    const existing = nodeMap.get(canonicalId);
+    if (existing) {
+      existing.value += node.value;
+      node.editTargets.forEach((target) => {
+        if (!existing.editTargets.some((candidate) => candidate.rowId === target.rowId && candidate.field === target.field)) {
+          existing.editTargets.push(target);
+        }
+      });
+    }
+    return canonicalId;
   };
 
   variables.forEach((variable) => {
     const variableValue = variableValues.get(variable.id) ?? 0;
-    addNode({
+    const variableNodeId = addNode({
       id: variable.id,
       label: variable.name || '未命名变量',
       column: stageColumn(variable.stage),
       color: stageColor(variable.stage),
       value: variableValue,
+      editTargets: [{ rowId: variable.id, field: 'name' }],
     });
+    variableNodeIds.set(variable.id, variableNodeId);
 
     if (variable.stage === 'raw') {
-      const purpose = variable.purpose.trim() || '未分类目的';
-      const scene = [variable.condition.trim(), variable.component.trim()].filter(Boolean).join(' · ') || '未设置场景';
-      const instrument = variable.instrument.trim() || '未设置仪器';
-      const purposeId = metaId('purpose', purpose);
-      const sceneId = metaId('scene', purpose, scene);
-      const instrumentId = metaId('instrument', purpose, scene, instrument);
-      addNode({ id: purposeId, label: purpose, column: 0, color: META_COLUMN_COLORS[0], value: variableValue }, true);
-      addNode({ id: sceneId, label: scene, column: 1, color: META_COLUMN_COLORS[1], value: variableValue }, true);
-      addNode({ id: instrumentId, label: instrument, column: 2, color: META_COLUMN_COLORS[2], value: variableValue }, true);
-      addOrAggregateLink(linkMap, purposeId, sceneId, variableValue);
-      addOrAggregateLink(linkMap, sceneId, instrumentId, variableValue);
-      addOrAggregateLink(linkMap, instrumentId, variable.id, variableValue);
-    } else {
-      variable.parents.forEach((parentId) => {
-        const parent = variables.find((candidate) => candidate.id === parentId);
-        if (parent && stageLevel(parent.stage) < stageLevel(variable.stage)) {
-          addOrAggregateLink(linkMap, parentId, variable.id, variableValues.get(parentId) ?? 0);
-        }
-      });
+      const chain: string[] = [];
+      if (variable.purpose.trim()) {
+        chain.push(addNode({
+          id: metaId('purpose', variable.purpose),
+          label: variable.purpose,
+          column: 0,
+          color: META_COLUMN_COLORS[0],
+          value: variableValue,
+          editTargets: [{ rowId: variable.id, field: 'purpose' }],
+        }));
+      }
+
+      const sceneParts = [variable.condition, variable.component].filter((value) => value.trim());
+      if (sceneParts.length) {
+        chain.push(addNode({
+          id: metaId('scene', ...sceneParts),
+          label: sceneParts.join(' · '),
+          column: 1,
+          color: META_COLUMN_COLORS[1],
+          value: variableValue,
+          editTargets: [
+            ...(variable.condition.trim() ? [{ rowId: variable.id, field: 'condition' as EditableField }] : []),
+            ...(variable.component.trim() ? [{ rowId: variable.id, field: 'component' as EditableField }] : []),
+          ],
+        }));
+      }
+
+      if (variable.instrument.trim()) {
+        chain.push(addNode({
+          id: metaId('instrument', variable.instrument),
+          label: variable.instrument,
+          column: 2,
+          color: META_COLUMN_COLORS[2],
+          value: variableValue,
+          editTargets: [{ rowId: variable.id, field: 'instrument' }],
+        }));
+      }
+
+      chain.push(variableNodeId);
+      rawChains.set(variable.id, chain);
     }
+  });
+
+  variables.forEach((variable) => {
+    const variableValue = variableValues.get(variable.id) ?? 0;
+    if (variable.stage === 'raw') {
+      const chain = rawChains.get(variable.id) ?? [];
+      for (let index = 0; index < chain.length - 1; index += 1) {
+        addOrAggregateLink(linkMap, chain[index], chain[index + 1], variableValue);
+      }
+      return;
+    }
+
+    const targetId = variableNodeIds.get(variable.id);
+    if (!targetId) return;
+    variable.parents.forEach((parentId) => {
+      const parent = variables.find((candidate) => candidate.id === parentId);
+      const sourceId = variableNodeIds.get(parentId);
+      if (parent && sourceId && stageLevel(parent.stage) < stageLevel(variable.stage)) {
+        addOrAggregateLink(linkMap, sourceId, targetId, variableValues.get(parentId) ?? 0);
+      }
+    });
   });
 
   return { nodes: [...nodeMap.values()], links: [...linkMap.values()], variableValues };
 }
 
 function splitLabel(label: string) {
-  const compact = label.replace(/（/g, '(').replace(/）/g, ')');
-  if (compact.length <= 10) return [compact];
-  if (compact.length <= 20) return [compact.slice(0, 10), compact.slice(10)];
-  return [compact.slice(0, 10), `${compact.slice(10, 19)}…`];
+  const explicitLines = label.replace(/（/g, '(').replace(/）/g, ')').split(/\r?\n/);
+  const wrapped = explicitLines.flatMap((line) => {
+    if (line.length <= 10) return [line || ' '];
+    return Array.from({ length: Math.ceil(line.length / 10) }, (_, index) => line.slice(index * 10, index * 10 + 10));
+  });
+  if (wrapped.length <= 3) return wrapped;
+  return [...wrapped.slice(0, 2), `${wrapped[2].slice(0, 9)}…`];
 }
 
 function safeNumber(value: string, fallback = 1) {
@@ -366,6 +444,46 @@ function safeNumber(value: string, fallback = 1) {
 
 function formatValue(value: number) {
   return Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+}
+
+function shortHash(value: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36).slice(-4).padStart(4, '0').toUpperCase();
+}
+
+function SortableHeader({
+  label,
+  sortKey,
+  activeKey,
+  direction,
+  onSort,
+}: {
+  label: string;
+  sortKey: SortKey;
+  activeKey: SortKey | null;
+  direction: SortDirection;
+  onSort: (key: SortKey) => void;
+}) {
+  const active = activeKey === sortKey;
+  const Icon = !active ? ArrowUpDown : direction === 'asc' ? ArrowUp : ArrowDown;
+  return (
+    <div className="flex items-center justify-between gap-1.5">
+      <span>{label}</span>
+      <button
+        type="button"
+        className={`grid size-5 shrink-0 place-items-center rounded transition-colors hover:bg-secondary hover:text-foreground ${active ? 'bg-secondary text-primary' : ''}`}
+        onClick={() => onSort(sortKey)}
+        aria-label={`${label}按${active && direction === 'asc' ? '降序' : '升序'}排列`}
+        title={`按${label}排序`}
+      >
+        <Icon className="size-3" />
+      </button>
+    </div>
+  );
 }
 
 function SankeyGraph({
@@ -382,11 +500,10 @@ function SankeyGraph({
   maxDerivedStage: number;
   selectedLinkId: string | null;
   onSelectLink: (id: string) => void;
-  onSelectNode: (id: string) => void;
+  onSelectNode: (targets: NodeEditTarget[]) => void;
   svgRef: React.RefObject<SVGSVGElement | null>;
 }) {
   const flow = useMemo(() => buildFlow(variables), [variables]);
-  const variableIds = useMemo(() => new Set(variables.map((variable) => variable.id)), [variables]);
   const stages = useMemo(() => getStages(maxDerivedStage), [maxDerivedStage]);
   const columnLabels = useMemo(() => [...META_COLUMN_LABELS, ...stages.map((stage) => stage.label)], [stages]);
   const columnColors = useMemo(() => [...META_COLUMN_COLORS, ...stages.map((stage) => stage.color)], [stages]);
@@ -511,21 +628,21 @@ function SankeyGraph({
         const position = positioned.positions.get(node.id);
         if (!position) return null;
         const lines = splitLabel(node.label);
-        const isVariable = variableIds.has(node.id);
+        const isEditable = node.editTargets.length > 0;
         return (
           <g
             key={node.id}
-            className={`sankey-node ${isVariable ? 'is-clickable' : ''}`}
-            onClick={isVariable ? () => onSelectNode(node.id) : undefined}
-            onKeyDown={isVariable ? (event) => {
+            className={`sankey-node ${isEditable ? 'is-clickable' : ''}`}
+            onClick={isEditable ? () => onSelectNode(node.editTargets) : undefined}
+            onKeyDown={isEditable ? (event) => {
               if (event.key === 'Enter' || event.key === ' ') {
                 event.preventDefault();
-                onSelectNode(node.id);
+                onSelectNode(node.editTargets);
               }
             } : undefined}
-            tabIndex={isVariable ? 0 : undefined}
-            role={isVariable ? 'button' : undefined}
-            aria-label={isVariable ? `定位并编辑变量：${node.label}` : undefined}
+            tabIndex={isEditable ? 0 : undefined}
+            role={isEditable ? 'button' : undefined}
+            aria-label={isEditable ? `定位并编辑：${node.label}` : undefined}
           >
             <rect x={position.x} y={position.y} width={positioned.nodeWidth} height={position.h} fill={node.color} />
             {lines.map((line, index) => (
@@ -539,7 +656,7 @@ function SankeyGraph({
                 fontWeight="650"
               >{line}</text>
             ))}
-            <title>{`${node.label}；高度 ${formatValue(node.value)}${isVariable ? '；点击定位到变量表' : ''}`}</title>
+            <title>{`${node.label}；高度 ${formatValue(node.value)}${isEditable ? '；点击定位到变量表' : ''}`}</title>
           </g>
         );
       })}
@@ -599,7 +716,11 @@ export default function Home() {
   const [metric, setMetric] = useState<FlowMetric>('数据权重');
   const [maxDerivedStage, setMaxDerivedStage] = useState(MIN_DERIVED_STAGES);
   const [selectedLinkId, setSelectedLinkId] = useState<string | null>(null);
-  const [focusedVariableId, setFocusedVariableId] = useState<string | null>(null);
+  const [focusedVariableIds, setFocusedVariableIds] = useState<string[]>([]);
+  const [sortKey, setSortKey] = useState<SortKey | null>(null);
+  const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
+  const [draggedVariableId, setDraggedVariableId] = useState<string | null>(null);
+  const [dragOverVariableId, setDragOverVariableId] = useState<string | null>(null);
   const [pasteOpen, setPasteOpen] = useState(false);
   const [pasteText, setPasteText] = useState('');
   const [pasteMessage, setPasteMessage] = useState('');
@@ -607,6 +728,7 @@ export default function Home() {
   const svgRef = useRef<SVGSVGElement>(null);
   const variableRowRefs = useRef(new Map<string, HTMLTableRowElement>());
   const focusTimerRef = useRef<number | null>(null);
+  const highlightTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     try {
@@ -635,9 +757,31 @@ export default function Home() {
 
   useEffect(() => () => {
     if (focusTimerRef.current !== null) window.clearTimeout(focusTimerRef.current);
+    if (highlightTimerRef.current !== null) window.clearTimeout(highlightTimerRef.current);
   }, []);
 
   const flow = useMemo(() => buildFlow(variables), [variables]);
+  const displayedVariables = useMemo(() => {
+    if (!sortKey) return variables;
+    const originalIndexes = new Map(variables.map((variable, index) => [variable.id, index]));
+    const valueFor = (variable: VariableRow): string | number => {
+      if (sortKey === 'stage') return stageLevel(variable.stage);
+      if (sortKey === 'height') return flow.variableValues.get(variable.id) ?? 0;
+      if (sortKey === 'parents') {
+        return variable.parents.map((parentId) => variables.find((candidate) => candidate.id === parentId)?.name ?? '').join('\u0000');
+      }
+      return variable[sortKey];
+    };
+    return [...variables].sort((a, b) => {
+      const aValue = valueFor(a);
+      const bValue = valueFor(b);
+      const comparison = typeof aValue === 'number' && typeof bValue === 'number'
+        ? aValue - bValue
+        : String(aValue).localeCompare(String(bValue), 'zh-CN', { numeric: true, sensitivity: 'base' });
+      if (comparison !== 0) return sortDirection === 'asc' ? comparison : -comparison;
+      return (originalIndexes.get(a.id) ?? 0) - (originalIndexes.get(b.id) ?? 0);
+    });
+  }, [flow.variableValues, sortDirection, sortKey, variables]);
   const stages = useMemo(() => getStages(maxDerivedStage), [maxDerivedStage]);
   const columnLabels = useMemo(() => [...META_COLUMN_LABELS, ...stages.map((stage) => stage.label)], [stages]);
   const columnColors = useMemo(() => [...META_COLUMN_COLORS, ...stages.map((stage) => stage.color)], [stages]);
@@ -703,20 +847,68 @@ export default function Home() {
     setSelectedLinkId((current) => current === id ? null : id);
   };
 
-  const focusVariableRow = (id: string) => {
-    const row = variableRowRefs.current.get(id);
+  const focusVariableRows = (targets: NodeEditTarget[]) => {
+    const firstTarget = targets[0];
+    if (!firstTarget) return;
+    const row = variableRowRefs.current.get(firstTarget.rowId);
     if (!row) return;
     setSelectedLinkId(null);
-    setFocusedVariableId(id);
+    setFocusedVariableIds([...new Set(targets.map((target) => target.rowId))]);
     row.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
     if (focusTimerRef.current !== null) window.clearTimeout(focusTimerRef.current);
+    if (highlightTimerRef.current !== null) window.clearTimeout(highlightTimerRef.current);
     focusTimerRef.current = window.setTimeout(() => {
-      const nameInput = row.querySelector<HTMLInputElement>('input[data-variable-name]');
-      nameInput?.focus({ preventScroll: true });
-      nameInput?.select();
-      setFocusedVariableId(null);
+      const fieldInput = row.querySelector<HTMLInputElement | HTMLTextAreaElement>(`[data-variable-field="${firstTarget.field}"]`);
+      fieldInput?.focus({ preventScroll: true });
+      fieldInput?.select();
       focusTimerRef.current = null;
     }, 520);
+    highlightTimerRef.current = window.setTimeout(() => {
+      setFocusedVariableIds([]);
+      highlightTimerRef.current = null;
+    }, 2200);
+  };
+
+  const toggleSort = (key: SortKey) => {
+    if (sortKey === key) {
+      setSortDirection((current) => current === 'asc' ? 'desc' : 'asc');
+      return;
+    }
+    setSortKey(key);
+    setSortDirection('asc');
+  };
+
+  const applyManualOrder = (orderedIds: string[]) => {
+    setVariables((current) => {
+      const byId = new Map(current.map((variable) => [variable.id, variable]));
+      return orderedIds.map((id) => byId.get(id)).filter((variable): variable is VariableRow => Boolean(variable));
+    });
+    setSortKey(null);
+  };
+
+  const moveVariable = (id: string, direction: -1 | 1) => {
+    const orderedIds = displayedVariables.map((variable) => variable.id);
+    const index = orderedIds.indexOf(id);
+    const nextIndex = index + direction;
+    if (index < 0 || nextIndex < 0 || nextIndex >= orderedIds.length) return;
+    [orderedIds[index], orderedIds[nextIndex]] = [orderedIds[nextIndex], orderedIds[index]];
+    applyManualOrder(orderedIds);
+  };
+
+  const dropVariable = (event: React.DragEvent<HTMLTableRowElement>, targetId: string) => {
+    event.preventDefault();
+    if (!draggedVariableId || draggedVariableId === targetId) {
+      setDragOverVariableId(null);
+      return;
+    }
+    const orderedIds = displayedVariables.map((variable) => variable.id).filter((id) => id !== draggedVariableId);
+    const targetIndex = orderedIds.indexOf(targetId);
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const insertAfter = event.clientY > bounds.top + bounds.height / 2;
+    orderedIds.splice(targetIndex + (insertAfter ? 1 : 0), 0, draggedVariableId);
+    applyManualOrder(orderedIds);
+    setDraggedVariableId(null);
+    setDragOverVariableId(null);
   };
 
   const downloadFile = (name: string, content: string, type: string) => {
@@ -870,27 +1062,27 @@ export default function Home() {
           </div>
 
           <div className="border-b bg-secondary/35 px-5 py-3 text-xs leading-5 text-muted-foreground">
-            <span className="font-semibold text-foreground">输入要领：</span>只给原始数据设定高度；衍生数据点选上游变量后，高度会自动求和。节点高度与连接带宽度使用同一尺度。
+            <span className="font-semibold text-foreground">输入要领：</span>文本框支持换行；空的场景或仪器会被自动跳过；同层同名节点在图中合并并累加高度。用表头按钮整理表格，用 # 控制图中上下顺序。
           </div>
 
           <div className="editor-scroll max-h-[56vh] min-h-[420px] overflow-auto">
-            <table className="w-full min-w-[1370px] border-separate border-spacing-0 text-sm">
+            <table className="w-full min-w-[1540px] border-separate border-spacing-0 text-sm">
               <thead className="sticky top-0 z-20 bg-card text-left text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground shadow-[0_1px_0_var(--border)]">
                 <tr>
-                  <th className="w-12 px-3 py-3 text-center">#</th>
-                  <th className="w-28 px-2 py-3">数据层级</th>
-                  <th className="w-48 px-2 py-3">变量名称</th>
-                  <th className="w-36 px-2 py-3">实验目的</th>
-                  <th className="w-36 px-2 py-3">实验条件</th>
-                  <th className="w-40 px-2 py-3">组件 / 装置</th>
-                  <th className="w-52 px-2 py-3">测量仪器</th>
-                  <th className="w-44 px-2 py-3">上游关系</th>
-                  <th className="w-28 px-2 py-3">高度值</th>
+                  <th className="w-36 px-3 py-3 text-center" title="# 用于控制同层节点在图中的上下顺序"># · 图层顺序</th>
+                  <th className="w-28 px-2 py-3"><SortableHeader label="数据层级" sortKey="stage" activeKey={sortKey} direction={sortDirection} onSort={toggleSort} /></th>
+                  <th className="w-48 px-2 py-3"><SortableHeader label="变量名称" sortKey="name" activeKey={sortKey} direction={sortDirection} onSort={toggleSort} /></th>
+                  <th className="w-36 px-2 py-3"><SortableHeader label="实验目的" sortKey="purpose" activeKey={sortKey} direction={sortDirection} onSort={toggleSort} /></th>
+                  <th className="w-36 px-2 py-3"><SortableHeader label="实验条件" sortKey="condition" activeKey={sortKey} direction={sortDirection} onSort={toggleSort} /></th>
+                  <th className="w-40 px-2 py-3"><SortableHeader label="组件 / 装置" sortKey="component" activeKey={sortKey} direction={sortDirection} onSort={toggleSort} /></th>
+                  <th className="w-52 px-2 py-3"><SortableHeader label="测量仪器" sortKey="instrument" activeKey={sortKey} direction={sortDirection} onSort={toggleSort} /></th>
+                  <th className="w-44 px-2 py-3"><SortableHeader label="上游关系" sortKey="parents" activeKey={sortKey} direction={sortDirection} onSort={toggleSort} /></th>
+                  <th className="w-28 px-2 py-3"><SortableHeader label="高度值" sortKey="height" activeKey={sortKey} direction={sortDirection} onSort={toggleSort} /></th>
                   <th className="w-12 px-2 py-3" />
                 </tr>
               </thead>
               <tbody>
-                {variables.map((row, index) => {
+                {displayedVariables.map((row, index) => {
                   const raw = row.stage === 'raw';
                   const computedHeight = flow.variableValues.get(row.id) ?? 0;
                   return (
@@ -901,19 +1093,46 @@ export default function Home() {
                         else variableRowRefs.current.delete(row.id);
                       }}
                       data-variable-row={row.id}
-                      className={`group border-b transition-colors hover:bg-secondary/35 ${focusedVariableId === row.id ? 'variable-row-target' : ''}`}
+                      onDragOver={(event) => event.preventDefault()}
+                      onDragEnter={() => setDragOverVariableId(row.id)}
+                      onDrop={(event) => dropVariable(event, row.id)}
+                      className={`group border-b transition-colors hover:bg-secondary/35 ${focusedVariableIds.includes(row.id) ? 'variable-row-target' : ''} ${dragOverVariableId === row.id && draggedVariableId !== row.id ? 'variable-row-drop-target' : ''}`}
                     >
-                      <td className="border-b px-3 py-3 text-center font-mono text-xs text-muted-foreground">{String(index + 1).padStart(2, '0')}</td>
+                      <td className="border-b px-2 py-3">
+                        <div className="flex items-center justify-center gap-1">
+                          <button
+                            type="button"
+                            draggable
+                            onDragStart={(event) => {
+                              event.dataTransfer.effectAllowed = 'move';
+                              event.dataTransfer.setData('text/plain', row.id);
+                              setDraggedVariableId(row.id);
+                            }}
+                            onDragEnd={() => {
+                              setDraggedVariableId(null);
+                              setDragOverVariableId(null);
+                            }}
+                            className="grid size-7 cursor-grab place-items-center rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground active:cursor-grabbing"
+                            aria-label={`拖动调整 ${row.name} 的图层顺序`}
+                            title={`哈希 #${shortHash(row.id)} · 拖动排序`}
+                          ><GripVertical className="size-3.5" /></button>
+                          <span className="min-w-9 font-mono text-[9px] text-muted-foreground" title={row.id}>#{shortHash(row.id)}</span>
+                          <div className="flex flex-col">
+                            <button type="button" className="grid size-4 place-items-center rounded hover:bg-secondary disabled:opacity-25" onClick={() => moveVariable(row.id, -1)} disabled={index === 0} aria-label={`上移 ${row.name}`}><ArrowUp className="size-2.5" /></button>
+                            <button type="button" className="grid size-4 place-items-center rounded hover:bg-secondary disabled:opacity-25" onClick={() => moveVariable(row.id, 1)} disabled={index === displayedVariables.length - 1} aria-label={`下移 ${row.name}`}><ArrowDown className="size-2.5" /></button>
+                          </div>
+                        </div>
+                      </td>
                       <td className="border-b px-2 py-3">
                         <NativeSelect className="w-full" size="sm" value={row.stage} onChange={(event) => updateVariable(row.id, 'stage', event.target.value as Stage)} aria-label={`第 ${index + 1} 行数据层级`}>
                           {stages.map((stage) => <NativeSelectOption key={stage.value} value={stage.value}>{stage.short}</NativeSelectOption>)}
                         </NativeSelect>
                       </td>
-                      <td className="border-b px-2 py-3"><Input data-variable-name value={row.name} onChange={(event) => updateVariable(row.id, 'name', event.target.value)} aria-label={`第 ${index + 1} 行变量名称`} /></td>
-                      <td className="border-b px-2 py-3"><Input value={row.purpose} onChange={(event) => updateVariable(row.id, 'purpose', event.target.value)} placeholder="如：测含湿量" aria-label={`第 ${index + 1} 行实验目的`} /></td>
-                      <td className="border-b px-2 py-3"><Input value={row.condition} onChange={(event) => updateVariable(row.id, 'condition', event.target.value)} placeholder="如：真空饱和" aria-label={`第 ${index + 1} 行实验条件`} /></td>
-                      <td className="border-b px-2 py-3"><Input value={row.component} onChange={(event) => updateVariable(row.id, 'component', event.target.value)} placeholder="如：真空箱" aria-label={`第 ${index + 1} 行实验装置`} /></td>
-                      <td className="border-b px-2 py-3"><Input value={row.instrument} onChange={(event) => updateVariable(row.id, 'instrument', event.target.value)} placeholder={raw ? '型号、量程、精度' : '由上游继承'} disabled={!raw} aria-label={`第 ${index + 1} 行测量仪器`} /></td>
+                      <td className="border-b px-2 py-3"><Textarea data-variable-field="name" className="min-h-12 resize-y py-2 text-sm leading-5" value={row.name} onChange={(event) => updateVariable(row.id, 'name', event.target.value)} aria-label={`第 ${index + 1} 行变量名称`} /></td>
+                      <td className="border-b px-2 py-3"><Textarea data-variable-field="purpose" className="min-h-12 resize-y py-2 text-sm leading-5" value={row.purpose} onChange={(event) => updateVariable(row.id, 'purpose', event.target.value)} placeholder="如：测含湿量" aria-label={`第 ${index + 1} 行实验目的`} /></td>
+                      <td className="border-b px-2 py-3"><Textarea data-variable-field="condition" className="min-h-12 resize-y py-2 text-sm leading-5" value={row.condition} onChange={(event) => updateVariable(row.id, 'condition', event.target.value)} placeholder="如：真空饱和" aria-label={`第 ${index + 1} 行实验条件`} /></td>
+                      <td className="border-b px-2 py-3"><Textarea data-variable-field="component" className="min-h-12 resize-y py-2 text-sm leading-5" value={row.component} onChange={(event) => updateVariable(row.id, 'component', event.target.value)} placeholder="如：真空箱" aria-label={`第 ${index + 1} 行实验装置`} /></td>
+                      <td className="border-b px-2 py-3"><Textarea data-variable-field="instrument" className="min-h-12 resize-y py-2 text-sm leading-5" value={row.instrument} onChange={(event) => updateVariable(row.id, 'instrument', event.target.value)} placeholder={raw ? '型号、量程、精度' : '由上游继承'} disabled={!raw} aria-label={`第 ${index + 1} 行测量仪器`} /></td>
                       <td className="border-b px-2 py-3">{raw ? <div className="flex h-8 items-center gap-2 rounded-lg border border-dashed px-2.5 text-xs text-muted-foreground"><Link2 className="size-3.5" />仪器自动连接</div> : <UpstreamPicker row={row} variables={variables} onChange={(parents) => updateVariable(row.id, 'parents', parents)} />}</td>
                       <td className="border-b px-2 py-3">
                         {raw ? (
@@ -956,10 +1175,10 @@ export default function Home() {
           </div>
 
           <div className="graph-scroll relative h-[62vh] min-h-[540px] overflow-auto bg-[radial-gradient(circle_at_1px_1px,#d8d6cc_1px,transparent_0)] bg-[size:22px_22px]">
-            <SankeyGraph variables={variables} annotations={annotations} maxDerivedStage={maxDerivedStage} selectedLinkId={selectedLinkId} onSelectLink={toggleSelectedLink} onSelectNode={focusVariableRow} svgRef={svgRef} />
+            <SankeyGraph variables={variables} annotations={annotations} maxDerivedStage={maxDerivedStage} selectedLinkId={selectedLinkId} onSelectLink={toggleSelectedLink} onSelectNode={focusVariableRows} svgRef={svgRef} />
           </div>
           <div className="flex items-center gap-2 border-t bg-secondary/25 px-5 py-2.5 text-[11px] text-muted-foreground">
-            <CircleHelp className="size-3.5 shrink-0" />点击流带可编辑，再次点击可取消选中；点击数据节点会定位到上方变量表并聚焦名称输入框。
+            <CircleHelp className="size-3.5 shrink-0" />点击流带可编辑，再次点击可取消；点击任意节点会定位并聚焦上方表格中的对应字段。同层同名节点会自动合并。
           </div>
 
           {selectedLink && selectedLinkId && (

@@ -152,6 +152,10 @@ body {
   box-shadow: inset 4px 0 var(--primary), inset 0 1px color-mix(in oklch, var(--primary) 35%, transparent), inset 0 -1px color-mix(in oklch, var(--primary) 35%, transparent);
 }
 
+.variable-row-drop-target td {
+  border-top: 2px solid var(--primary);
+}
+
 .sankey-formula-label {
   display: flex;
   width: 100%;
