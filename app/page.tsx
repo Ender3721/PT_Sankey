@@ -376,7 +376,7 @@ function buildFlow(variables: VariableRow[]) {
           id: metaId('placeholder-purpose', variable.id),
           label: '待填写实验目的',
           column: 0,
-          color: '#aaa89e',
+          color: META_COLUMN_COLORS[0],
           value: variableValue,
           editTargets: [{ rowId: variable.id, field: 'purpose' }],
           placeholder: true,
@@ -401,7 +401,7 @@ function buildFlow(variables: VariableRow[]) {
           id: metaId('placeholder-scene', variable.id),
           label: '待填写实验场景',
           column: 1,
-          color: '#aaa89e',
+          color: META_COLUMN_COLORS[1],
           value: variableValue,
           editTargets: [{ rowId: variable.id, field: 'condition' }],
           placeholder: true,
@@ -422,7 +422,7 @@ function buildFlow(variables: VariableRow[]) {
           id: metaId('placeholder-instrument', variable.id),
           label: '待填写测量仪器',
           column: 2,
-          color: '#aaa89e',
+          color: META_COLUMN_COLORS[2],
           value: variableValue,
           editTargets: [{ rowId: variable.id, field: 'instrument' }],
           placeholder: true,
@@ -624,14 +624,15 @@ function SankeyGraph({
         const target = positioned.positions.get(link.target);
         const band = positioned.linkBands.get(link.id);
         if (!source || !target || !band) return null;
-        const annotation = annotations[link.id];
         const weight = link.baseWeight;
-        const x1 = source.x + positioned.nodeWidth;
+        const sourceNode = flow.nodes.find((node) => node.id === link.source);
+        const targetNode = flow.nodes.find((node) => node.id === link.target);
+        const routingOnly = Boolean(sourceNode?.placeholder || targetNode?.placeholder);
+        const annotation = routingOnly ? undefined : annotations[link.id];
+        const x1 = source.x + (sourceNode?.placeholder ? 0 : positioned.nodeWidth);
         const x2 = target.x;
         const curve = Math.max(50, (x2 - x1) * 0.52);
         const path = `M ${x1} ${band.sy0} C ${x1 + curve} ${band.sy0}, ${x2 - curve} ${band.ty0}, ${x2} ${band.ty0} L ${x2} ${band.ty1} C ${x2 - curve} ${band.ty1}, ${x1 + curve} ${band.sy1}, ${x1} ${band.sy1} Z`;
-        const sourceNode = flow.nodes.find((node) => node.id === link.source);
-        const targetNode = flow.nodes.find((node) => node.id === link.target);
         const color = targetNode?.color ?? sourceNode?.color ?? '#637068';
         const formula = annotation?.showFormula === false ? '' : annotation?.formula?.trim() ?? '';
         const formulaHtml = formula ? katex.renderToString(formula, { throwOnError: false, displayMode: false, trust: false, strict: 'ignore' }) : '';
@@ -643,27 +644,27 @@ function SankeyGraph({
         ].filter(Boolean).join('；');
         return (
           <g key={link.id} className={`sankey-link ${selectedLinkId === link.id ? 'is-selected' : ''}`}>
-            <path d={path} fill="transparent" stroke="transparent" strokeWidth="10" onClick={() => onSelectLink(link.id)} tabIndex={0} role="button" aria-label={`编辑关系：${sourceNode?.label} 到 ${targetNode?.label}`} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') onSelectLink(link.id); }} />
+            {!routingOnly && <path d={path} fill="transparent" stroke="transparent" strokeWidth="10" onClick={() => onSelectLink(link.id)} tabIndex={0} role="button" aria-label={`编辑关系：${sourceNode?.label} 到 ${targetNode?.label}`} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') onSelectLink(link.id); }} />}
             <path className="sankey-flow" d={path} fill={color} fillOpacity={selectedLinkId === link.id ? 0.58 : 0.24} pointerEvents="none" />
             {formulaHtml && (
               <foreignObject x={(x1 + x2) / 2 - 70} y={centerY - 16} width="140" height="32" pointerEvents="none">
                 <div xmlns="http://www.w3.org/1999/xhtml" className="sankey-formula-label" dangerouslySetInnerHTML={{ __html: formulaHtml }} />
               </foreignObject>
             )}
-            <title>{title}</title>
+            {!routingOnly && <title>{title}</title>}
           </g>
         );
       })}
 
       {flow.nodes.map((node) => {
         const position = positioned.positions.get(node.id);
-        if (!position) return null;
+        if (!position || node.placeholder) return null;
         const lines = splitLabel(node.label);
         const isEditable = node.editTargets.length > 0;
         return (
           <g
             key={node.id}
-            className={`sankey-node ${isEditable ? 'is-clickable' : ''} ${node.placeholder ? 'is-placeholder' : ''}`}
+            className={`sankey-node ${isEditable ? 'is-clickable' : ''}`}
             onClick={isEditable ? () => onSelectNode(node.editTargets) : undefined}
             onKeyDown={isEditable ? (event) => {
               if (event.key === 'Enter' || event.key === ' ') {
@@ -673,31 +674,21 @@ function SankeyGraph({
             } : undefined}
             tabIndex={isEditable ? 0 : undefined}
             role={isEditable ? 'button' : undefined}
-            aria-label={isEditable ? `${node.placeholder ? '定位并填写' : '定位并编辑'}：${node.label}` : undefined}
+            aria-label={isEditable ? `定位并编辑：${node.label}` : undefined}
           >
-            <rect
-              x={position.x}
-              y={position.y}
-              width={positioned.nodeWidth}
-              height={position.h}
-              fill={node.color}
-              fillOpacity={node.placeholder ? 0.32 : 1}
-              stroke={node.placeholder ? node.color : undefined}
-              strokeWidth={node.placeholder ? 1 : undefined}
-              strokeDasharray={node.placeholder ? '3 2' : undefined}
-            />
+            <rect x={position.x} y={position.y} width={positioned.nodeWidth} height={position.h} fill={node.color} />
             {lines.map((line, index) => (
               <text
                 key={line}
                 x={position.x + positioned.nodeWidth / 2}
                 y={position.y - (lines.length - index) * 13 + 5}
                 textAnchor="middle"
-                fill={node.placeholder ? '#85837a' : node.color}
+                fill={node.color}
                 fontSize="10.5"
                 fontWeight="650"
               >{line}</text>
             ))}
-            <title>{`${node.placeholder ? '占位节点；' : ''}${node.label}；高度 ${formatValue(node.value)}${isEditable ? '；点击定位到变量表' : ''}`}</title>
+            <title>{`${node.label}；高度 ${formatValue(node.value)}${isEditable ? '；点击定位到变量表' : ''}`}</title>
           </g>
         );
       })}
@@ -1103,7 +1094,7 @@ export default function Home() {
           </div>
 
           <div className="border-b bg-secondary/35 px-5 py-3 text-xs leading-5 text-muted-foreground">
-            <span className="font-semibold text-foreground">输入要领：</span>文本框支持换行；空字段会生成独立占位节点以保持逐列流动；同层同名节点在图中合并并累加高度。用表头按钮整理表格，用 # 控制图中上下顺序。
+            <span className="font-semibold text-foreground">输入要领：</span>文本框支持换行；空字段会使用隐形占位点保持逐列流动；同层同名节点在图中合并并累加高度。用表头按钮整理表格，用 # 控制图中上下顺序。
           </div>
 
           <div className="editor-scroll max-h-[56vh] min-h-[420px] overflow-auto">
