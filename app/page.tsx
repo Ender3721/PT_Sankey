@@ -374,6 +374,7 @@ function SankeyGraph({
   maxDerivedStage,
   selectedLinkId,
   onSelectLink,
+  onSelectNode,
   svgRef,
 }: {
   variables: VariableRow[];
@@ -381,9 +382,11 @@ function SankeyGraph({
   maxDerivedStage: number;
   selectedLinkId: string | null;
   onSelectLink: (id: string) => void;
+  onSelectNode: (id: string) => void;
   svgRef: React.RefObject<SVGSVGElement | null>;
 }) {
   const flow = useMemo(() => buildFlow(variables), [variables]);
+  const variableIds = useMemo(() => new Set(variables.map((variable) => variable.id)), [variables]);
   const stages = useMemo(() => getStages(maxDerivedStage), [maxDerivedStage]);
   const columnLabels = useMemo(() => [...META_COLUMN_LABELS, ...stages.map((stage) => stage.label)], [stages]);
   const columnColors = useMemo(() => [...META_COLUMN_COLORS, ...stages.map((stage) => stage.color)], [stages]);
@@ -508,8 +511,22 @@ function SankeyGraph({
         const position = positioned.positions.get(node.id);
         if (!position) return null;
         const lines = splitLabel(node.label);
+        const isVariable = variableIds.has(node.id);
         return (
-          <g key={node.id} className="sankey-node">
+          <g
+            key={node.id}
+            className={`sankey-node ${isVariable ? 'is-clickable' : ''}`}
+            onClick={isVariable ? () => onSelectNode(node.id) : undefined}
+            onKeyDown={isVariable ? (event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                onSelectNode(node.id);
+              }
+            } : undefined}
+            tabIndex={isVariable ? 0 : undefined}
+            role={isVariable ? 'button' : undefined}
+            aria-label={isVariable ? `定位并编辑变量：${node.label}` : undefined}
+          >
             <rect x={position.x} y={position.y} width={positioned.nodeWidth} height={position.h} fill={node.color} />
             {lines.map((line, index) => (
               <text
@@ -522,7 +539,7 @@ function SankeyGraph({
                 fontWeight="650"
               >{line}</text>
             ))}
-            <title>{`${node.label}；高度 ${formatValue(node.value)}`}</title>
+            <title>{`${node.label}；高度 ${formatValue(node.value)}${isVariable ? '；点击定位到变量表' : ''}`}</title>
           </g>
         );
       })}
@@ -581,12 +598,15 @@ export default function Home() {
   const [annotations, setAnnotations] = useState<Record<string, LinkAnnotation>>(SAMPLE_ANNOTATIONS);
   const [metric, setMetric] = useState<FlowMetric>('数据权重');
   const [maxDerivedStage, setMaxDerivedStage] = useState(MIN_DERIVED_STAGES);
-  const [selectedLinkId, setSelectedLinkId] = useState<string | null>('v-mass=>v-dry');
+  const [selectedLinkId, setSelectedLinkId] = useState<string | null>(null);
+  const [focusedVariableId, setFocusedVariableId] = useState<string | null>(null);
   const [pasteOpen, setPasteOpen] = useState(false);
   const [pasteText, setPasteText] = useState('');
   const [pasteMessage, setPasteMessage] = useState('');
   const [hydrated, setHydrated] = useState(false);
   const svgRef = useRef<SVGSVGElement>(null);
+  const variableRowRefs = useRef(new Map<string, HTMLTableRowElement>());
+  const focusTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     try {
@@ -612,6 +632,10 @@ export default function Home() {
     const state: ProjectState = { variables, annotations, metric, maxDerivedStage };
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   }, [variables, annotations, metric, maxDerivedStage, hydrated]);
+
+  useEffect(() => () => {
+    if (focusTimerRef.current !== null) window.clearTimeout(focusTimerRef.current);
+  }, []);
 
   const flow = useMemo(() => buildFlow(variables), [variables]);
   const stages = useMemo(() => getStages(maxDerivedStage), [maxDerivedStage]);
@@ -673,6 +697,26 @@ export default function Home() {
       ...current,
       [selectedLinkId]: { note: '', formula: '', showFormula: true, ...current[selectedLinkId], ...patch },
     }));
+  };
+
+  const toggleSelectedLink = (id: string) => {
+    setSelectedLinkId((current) => current === id ? null : id);
+  };
+
+  const focusVariableRow = (id: string) => {
+    const row = variableRowRefs.current.get(id);
+    if (!row) return;
+    setSelectedLinkId(null);
+    setFocusedVariableId(id);
+    row.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+    if (focusTimerRef.current !== null) window.clearTimeout(focusTimerRef.current);
+    focusTimerRef.current = window.setTimeout(() => {
+      const nameInput = row.querySelector<HTMLInputElement>('input[data-variable-name]');
+      nameInput?.focus({ preventScroll: true });
+      nameInput?.select();
+      setFocusedVariableId(null);
+      focusTimerRef.current = null;
+    }, 520);
   };
 
   const downloadFile = (name: string, content: string, type: string) => {
@@ -782,7 +826,7 @@ export default function Home() {
     setAnnotations(SAMPLE_ANNOTATIONS);
     setMetric('数据权重');
     setMaxDerivedStage(MIN_DERIVED_STAGES);
-    setSelectedLinkId('v-mass=>v-dry');
+    setSelectedLinkId(null);
   };
 
   return (
@@ -808,7 +852,7 @@ export default function Home() {
         </div>
       </header>
 
-      <section className="mx-auto grid max-w-[1760px] gap-4 p-4 lg:grid-cols-[minmax(580px,0.92fr)_minmax(680px,1.08fr)] lg:px-7">
+      <section className="mx-auto flex max-w-[1760px] flex-col gap-4 p-4 lg:px-7">
         <section className="min-w-0 overflow-hidden rounded-2xl border bg-card shadow-[0_7px_28px_rgb(62_52_37/6%)]">
           <div className="flex flex-wrap items-end justify-between gap-3 border-b px-5 py-4">
             <div>
@@ -829,7 +873,7 @@ export default function Home() {
             <span className="font-semibold text-foreground">输入要领：</span>只给原始数据设定高度；衍生数据点选上游变量后，高度会自动求和。节点高度与连接带宽度使用同一尺度。
           </div>
 
-          <div className="editor-scroll max-h-[68vh] min-h-[520px] overflow-auto">
+          <div className="editor-scroll max-h-[56vh] min-h-[420px] overflow-auto">
             <table className="w-full min-w-[1370px] border-separate border-spacing-0 text-sm">
               <thead className="sticky top-0 z-20 bg-card text-left text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground shadow-[0_1px_0_var(--border)]">
                 <tr>
@@ -850,14 +894,22 @@ export default function Home() {
                   const raw = row.stage === 'raw';
                   const computedHeight = flow.variableValues.get(row.id) ?? 0;
                   return (
-                    <tr key={row.id} className="group border-b transition-colors hover:bg-secondary/35">
+                    <tr
+                      key={row.id}
+                      ref={(element) => {
+                        if (element) variableRowRefs.current.set(row.id, element);
+                        else variableRowRefs.current.delete(row.id);
+                      }}
+                      data-variable-row={row.id}
+                      className={`group border-b transition-colors hover:bg-secondary/35 ${focusedVariableId === row.id ? 'variable-row-target' : ''}`}
+                    >
                       <td className="border-b px-3 py-3 text-center font-mono text-xs text-muted-foreground">{String(index + 1).padStart(2, '0')}</td>
                       <td className="border-b px-2 py-3">
                         <NativeSelect className="w-full" size="sm" value={row.stage} onChange={(event) => updateVariable(row.id, 'stage', event.target.value as Stage)} aria-label={`第 ${index + 1} 行数据层级`}>
                           {stages.map((stage) => <NativeSelectOption key={stage.value} value={stage.value}>{stage.short}</NativeSelectOption>)}
                         </NativeSelect>
                       </td>
-                      <td className="border-b px-2 py-3"><Input value={row.name} onChange={(event) => updateVariable(row.id, 'name', event.target.value)} aria-label={`第 ${index + 1} 行变量名称`} /></td>
+                      <td className="border-b px-2 py-3"><Input data-variable-name value={row.name} onChange={(event) => updateVariable(row.id, 'name', event.target.value)} aria-label={`第 ${index + 1} 行变量名称`} /></td>
                       <td className="border-b px-2 py-3"><Input value={row.purpose} onChange={(event) => updateVariable(row.id, 'purpose', event.target.value)} placeholder="如：测含湿量" aria-label={`第 ${index + 1} 行实验目的`} /></td>
                       <td className="border-b px-2 py-3"><Input value={row.condition} onChange={(event) => updateVariable(row.id, 'condition', event.target.value)} placeholder="如：真空饱和" aria-label={`第 ${index + 1} 行实验条件`} /></td>
                       <td className="border-b px-2 py-3"><Input value={row.component} onChange={(event) => updateVariable(row.id, 'component', event.target.value)} placeholder="如：真空箱" aria-label={`第 ${index + 1} 行实验装置`} /></td>
@@ -904,10 +956,10 @@ export default function Home() {
           </div>
 
           <div className="graph-scroll relative h-[62vh] min-h-[540px] overflow-auto bg-[radial-gradient(circle_at_1px_1px,#d8d6cc_1px,transparent_0)] bg-[size:22px_22px]">
-            <SankeyGraph variables={variables} annotations={annotations} maxDerivedStage={maxDerivedStage} selectedLinkId={selectedLinkId} onSelectLink={setSelectedLinkId} svgRef={svgRef} />
+            <SankeyGraph variables={variables} annotations={annotations} maxDerivedStage={maxDerivedStage} selectedLinkId={selectedLinkId} onSelectLink={toggleSelectedLink} onSelectNode={focusVariableRow} svgRef={svgRef} />
           </div>
           <div className="flex items-center gap-2 border-t bg-secondary/25 px-5 py-2.5 text-[11px] text-muted-foreground">
-            <CircleHelp className="size-3.5 shrink-0" />流带宽度继承上游高度，多条流入在目标节点内堆叠求和。点击流带可编辑备注与 LaTeX 公式。
+            <CircleHelp className="size-3.5 shrink-0" />点击流带可编辑，再次点击可取消选中；点击数据节点会定位到上方变量表并聚焦名称输入框。
           </div>
 
           {selectedLink && selectedLinkId && (
