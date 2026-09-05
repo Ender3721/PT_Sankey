@@ -17,6 +17,7 @@ import {
   ChevronDown,
   CircleHelp,
   ClipboardPaste,
+  Copy,
   Download,
   FileJson,
   FlaskConical,
@@ -875,6 +876,21 @@ export default function Home() {
     if (selectedLinkId?.includes(id)) setSelectedLinkId(null);
   };
 
+  const duplicateVariable = (id: string) => {
+    const source = variables.find((variable) => variable.id === id);
+    if (!source) return;
+    const copy: VariableRow = {
+      ...source,
+      id: makeId('variable'),
+      parents: [...source.parents],
+    };
+    setVariables((current) => {
+      const sourceIndex = current.findIndex((variable) => variable.id === id);
+      if (sourceIndex < 0) return current;
+      return [...current.slice(0, sourceIndex + 1), copy, ...current.slice(sourceIndex + 1)];
+    });
+  };
+
   const updateAnnotation = (patch: Partial<LinkAnnotation>) => {
     if (!selectedLinkId) return;
     setAnnotations((current) => ({
@@ -1129,7 +1145,7 @@ export default function Home() {
                   <th className="w-52 px-2 py-3"><SortableHeader label="测量仪器" sortKey="instrument" activeKey={sortKey} direction={sortDirection} onSort={toggleSort} /></th>
                   <th className="w-44 px-2 py-3"><SortableHeader label="上游关系" sortKey="parents" activeKey={sortKey} direction={sortDirection} onSort={toggleSort} /></th>
                   <th className="w-28 px-2 py-3"><SortableHeader label="高度值" sortKey="height" activeKey={sortKey} direction={sortDirection} onSort={toggleSort} /></th>
-                  <th className="w-12 px-2 py-3" />
+                  <th className="w-20 px-2 py-3" />
                 </tr>
               </thead>
               <tbody>
@@ -1195,7 +1211,12 @@ export default function Home() {
                           </div>
                         )}
                       </td>
-                      <td className="border-b px-2 py-3"><Button variant="ghost" size="icon-sm" onClick={() => removeVariable(row.id)} aria-label={`删除 ${row.name}`} title="删除变量"><Trash2 /></Button></td>
+                      <td className="border-b px-2 py-3">
+                        <div className="flex items-center justify-end gap-1">
+                          <Button variant="ghost" size="icon-sm" onClick={() => duplicateVariable(row.id)} aria-label={`复制 ${row.name}`} title="复制并插入到下方"><Copy /></Button>
+                          <Button variant="ghost" size="icon-sm" onClick={() => removeVariable(row.id)} aria-label={`删除 ${row.name}`} title="删除变量"><Trash2 /></Button>
+                        </div>
+                      </td>
                     </tr>
                   );
                 })}
