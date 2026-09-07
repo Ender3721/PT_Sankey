@@ -8,7 +8,7 @@ traditional experimental records, this paper proposes a general-purpose
 variable data flow paradigm for building physics and multi-material 
 experiments.<br>
 Based on the Sankey diagram, an innovative variant termed 
-Physics-trace-sankey (PT_Sankey) is developed to enable traceable 
+**Physics-trace-sankey (PT_Sankey)** is developed to enable traceable 
 visualization of physical quantities throughout the entire process.
 
 ---
